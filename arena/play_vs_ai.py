@@ -1190,7 +1190,9 @@ def render_play_vs_ai(mobile: bool = False) -> None:
             seed = int(st.number_input("seed", 0, 9999, 0, key="mmv_seed_in"))
             start = st.button("この設定で開始", type="primary",
                               use_container_width=True)
-            st.toggle("🧠 主人公AIの思考表示", key="mmv_show_mind", value=True,
+            # ★β-FB（2026-07-24・ユーザー指示）：既定OFF（初見に情報過多＝わかりにくい。
+            #   公開情報ベース＝ネタバレではないので表示自体は維持・見たい人がONにする）。
+            st.toggle("🧠 主人公AIの思考表示", key="mmv_show_mind", value=False,
                       help="ONで、対局中に主人公AIが公開情報からどう推理しているか"
                            "（内省パネル）を下部に表示します。")
             st.divider()
@@ -1230,7 +1232,7 @@ def render_play_vs_ai(mobile: bool = False) -> None:
                 mmv_script=relabel, mmv_seed=reseed, mmv_choices=[], mmv_extra_loops=0)
             cloud.log_event("play_start", side="mastermind", source="restart")
             st.rerun()
-        st.toggle("🧠 主人公AIの思考表示", key="mmv_show_mind", value=True,
+        st.toggle("🧠 主人公AIの思考表示", key="mmv_show_mind", value=False,
                   help="ONで、対局中に主人公AIの推理（内省パネル）を下部に表示します。")
         st.divider()
         _render_load_widget()   # 📂 対局を読み込む（.rooper.json）＝別の保存局面へ切替

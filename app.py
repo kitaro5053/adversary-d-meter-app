@@ -178,7 +178,7 @@ MODELS = {
 TRANSLATOR_MODEL = "claude-sonnet-5"
 
 # 機能の節目で手動更新する人間可読バージョン（git短縮ハッシュとは別の目印）。
-APP_VERSION = "0.22.0"  # β公開初版：C-18安定版隠蔽・メンバー調整ラベル・アルバイト対/遅延登場・AI強化一式
+APP_VERSION = "0.22.1"  # β-FB：版バッジ/バグ報告を全モード共通化・報告導線の直リンク化・思考表示既定OFF
 
 
 @st.cache_data
@@ -248,20 +248,27 @@ def _diag_string(mode: str = "", board_hash: str = "", error: str = "") -> str:
     return " / ".join(parts)
 
 
+def _prefilled_form_url(mode: str = "", board_hash: str = "") -> str:
+    """C-3b：REPORT_FORM_URL テンプレートに版/モード/ハッシュを差し込んだ事前入力URL。
+    テンプレートでない素のURLはそのまま返す。未設定は空文字。"""
+    url = _report_form_url()
+    if url and any(ph in url for ph in ("{ver}", "{mode}", "{hash}")):
+        from urllib.parse import quote
+        url = (url.replace("{ver}", quote(CHANNEL_BADGE))
+                  .replace("{mode}", quote(mode))
+                  .replace("{hash}", quote(board_hash)))
+    return url
+
+
 def render_report_block(mode: str = "", board_hash: str = "", error: str = "") -> None:
     """C-3：🐛バグ報告の導線（外部フォーム＋自動添付の診断情報）。フォーム未設定でも壊れない
     ＝診断情報を提示して現行の qa_log/ログ提出でも拾える形にする。公開運用方針 §3(a)。"""
     diag = _diag_string(mode, board_hash, error)
-    url = _report_form_url()
+    # ★C-3b：URL テンプレートに {ver}/{mode}/{hash} プレースホルダがあれば、3値を URL エンコード
+    #   して差し込んだ**事前入力URL**にする（entry ID はコードに持たない＝フォーム作り替えは
+    #   secrets のテンプレート書き換えだけで追従）。プレースホルダ無しの素の URL は現行動作＝後方互換。
+    url = _prefilled_form_url(mode, board_hash)
     if url:
-        # ★C-3b：URL テンプレートに {ver}/{mode}/{hash} プレースホルダがあれば、3値を URL エンコード
-        #   して差し込んだ**事前入力URL**にする（entry ID はコードに持たない＝フォーム作り替えは
-        #   secrets のテンプレート書き換えだけで追従）。プレースホルダ無しの素の URL は現行動作＝後方互換。
-        if any(ph in url for ph in ("{ver}", "{mode}", "{hash}")):
-            from urllib.parse import quote
-            url = (url.replace("{ver}", quote(CHANNEL_BADGE))
-                      .replace("{mode}", quote(mode))
-                      .replace("{hash}", quote(board_hash)))
         try:
             st.link_button("🐛 バグ報告フォームを開く", url)
         except Exception:  # noqa: BLE001  古いStreamlitは link_button 非対応→markdownリンク
@@ -770,8 +777,13 @@ def feedback_ui(idx: int) -> None:
             _bh = hashlib.sha1(
                 (entry.get("question", "") + str(entry.get("translation", "")))
                 .encode("utf-8")).hexdigest()[:8]
-            with st.expander("🐛 バグ報告フォームで詳しく報告する（任意）"):
-                render_report_block(mode="💬", board_hash=_bh)
+            # ★β-FB（2026-07-24・ユーザー指摘）：expanderで畳むと余計な1クリック＝
+            #   ボタン自体を事前入力フォームへの直リンクにする（版・モード・盤面ハッシュ入り）。
+            _fu = _prefilled_form_url(mode="💬", board_hash=_bh)
+            try:
+                st.link_button("🐛 バグ報告フォームで詳しく報告する（版・盤面情報は自動添付）", _fu)
+            except Exception:  # noqa: BLE001  古いStreamlitは link_button 非対応
+                st.markdown(f"[🐛 バグ報告フォームで詳しく報告する]({_fu})")
 
 
 def render_engine_extras(entry: dict) -> None:
@@ -906,6 +918,16 @@ with st.sidebar:
     st.radio("表示", _view_labels, index=_view_idx, horizontal=True,
              key="_view_radio", on_change=_set_view_override,
              help="スマホで横並びが崩れる場合は『📱 スマホ』に。PCは『💻 PC』のまま。")
+    # ★β-FB（2026-07-24・ユーザー指摘）：版バッジと🐛バグ報告ボタンは**全モード共通**で
+    #   ここ（モード切替の直下）に出す。従来は相談AIサイドバー限定＝プレイ系モードで
+    #   版が見えず報告も押せなかった。ハッシュ無しの事前入力（版・モードのみ）。
+    st.caption(f"{CHANNEL_BADGE}｜build:{get_build_info()}")
+    _rf = _prefilled_form_url(mode=str(st.session_state.get("app_mode", ""))[:2])
+    if _rf:
+        try:
+            st.link_button("🐛 バグ報告", _rf, use_container_width=True)
+        except Exception:  # noqa: BLE001
+            st.markdown(f"[🐛 バグ報告]({_rf})")
     st.divider()
 
 # 同時接続数の計測: 全モード共通で刻む（🎮/🔁 は下で st.stop() するため分岐の前に置く）。
@@ -1115,9 +1137,7 @@ with st.sidebar:
         st.caption(f"・{n}")
 
     st.divider()
-    st.caption(CHANNEL_BADGE)  # C-2：チャンネル/版バッジ（build hash 隣＝障害報告の版特定用）
-    st.caption(f"バージョン {APP_VERSION}")
-    st.caption(f"ビルド: {get_build_info()}")
+    # ★版バッジ/ビルドは全モード共通サイドバー（モード切替直下）へ移動（β-FB 2026-07-24）。
 
     # 開発者モード：ONのときだけ想定問答ランナー（作者用）を表示。既定OFF＝テスターには見えない。
     # ★安定版（β公開）ではチェックボックス自体を出さない＝dev_mode恒偽（C-18の相談AI側・
