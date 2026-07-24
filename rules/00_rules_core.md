@@ -1,7 +1,7 @@
 <!--
 惨劇RoopeR 5th 構造化ルールKB — 00: コアルール（全セット共通）
-私的利用前提。原本（BakaFire『惨劇RoopeR 5th』主人公の書／脚本家の書）の自己使用複製として作成。
-第三者への頒布時はBakaFireの許諾が必要。
+原本（BakaFire Party『惨劇RoopeR 5th』主人公の書／脚本家の書）からの転載KB。
+BakaFire Party二次創作ガイドライン（https://bakafire.main.jp/rooper/sr_dl_04_sozai.htm）に基づき、出典明記のうえ転載（原作：BakaFire Party製『惨劇RoopeR』・非公式ファンメイド）。
 主な出典: 主人公の書 p14-28, p44-45（ゲームルール／脚本とは／記法／進行）、脚本家の書 p3-6（進行補足）。
 凡例: 「★」= 注意点・公式正誤・FAQ要参照。「→NN」= NN番のKBファイルへ。
 -->

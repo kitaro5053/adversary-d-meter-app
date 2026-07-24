@@ -1633,12 +1633,15 @@ def render_play_vs_ai(mobile: bool = False) -> None:
     #    計算するライブ助言＝盤面レビュー位置に依らず「今の脅威」を出す。以前は not review_mode で
     #    弾いており、一番大事な「3枚伏せた段階」でブランクになっていた（生成は全時点T≥1＝表示側症状）。
     #    レビュー中は時点差（上の盤面＝過去／脅威表＝現決定局面）をキャプションで明示する。 --
-    if pending is not None:
+    # ★β-FB（2026-07-24・ユーザー指示）：防御プランナーもAI思考の一部＝
+    #   「🧠 主人公AIの思考表示」トグルと連動（既定OFF＝非表示）。旧「常時表示」
+    #   （2026-07-13要望・A-15）はこの指示で上書き。pending中の挙動（A-15）はトグルON時に維持。
+    if pending is not None and st.session_state.get("mmv_show_mind", False):
         st.divider()
         render_defense_planner(state, sc, reviewing=review_mode)
 
     # -- ★役職説明より下：主人公AIの内省パネル（サイドバー「🧠 主人公AIの思考表示」でON/OFF） --
-    if st.session_state.get("mmv_show_mind", True):
+    if st.session_state.get("mmv_show_mind", False):
         st.divider()
         st.markdown("#### 🧠 主人公AIの思考")
         st.caption("AIが公開情報だけからどう配役・ルールを推理し、何を護ろうとしているか。"

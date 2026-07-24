@@ -1,7 +1,7 @@
 <!--
 惨劇RoopeR 5th 構造化ルールKB — 50: 惨劇セット Basic Tragedy X（BTX）
-私的利用前提。原本（BakaFire『惨劇RoopeR 5th』主人公の書／脚本家の書）の自己使用複製として作成。
-第三者への頒布時はBakaFireの許諾が必要。
+原本（BakaFire Party『惨劇RoopeR 5th』主人公の書／脚本家の書）からの転載KB。
+BakaFire Party二次創作ガイドライン（https://bakafire.main.jp/rooper/sr_dl_04_sozai.htm）に基づき、出典明記のうえ転載（原作：BakaFire Party製『惨劇RoopeR』・非公式ファンメイド）。
 主な出典: 主人公の書 p32-36（惨劇セット Basic Tragedy X）。役職の条文能力・記法は p27-28、
 役職の追加メカニズムは脚本家の書 p4-6。公式正誤・FAQ裁定は 60_faq_rulings.md を参照。
 凡例: 「★」= 特に注意すべき点・正誤・FAQ要参照箇所。「→60」= 60_faq_rulings.md の該当裁定へ。

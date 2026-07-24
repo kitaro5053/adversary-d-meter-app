@@ -178,7 +178,7 @@ MODELS = {
 TRANSLATOR_MODEL = "claude-sonnet-5"
 
 # 機能の節目で手動更新する人間可読バージョン（git短縮ハッシュとは別の目印）。
-APP_VERSION = "0.22.1"  # β-FB：版バッジ/バグ報告を全モード共通化・報告導線の直リンク化・思考表示既定OFF
+APP_VERSION = "0.22.2"  # β-FB：防御プランナーを思考表示トグル配下へ（既定OFF）・KBヘッダのガイドライン準拠表記
 
 
 @st.cache_data
