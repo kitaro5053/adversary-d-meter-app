@@ -1,0 +1,13 @@
+# ★依存を固定（2026-07-10）：本番(Streamlit Cloud)が再デプロイ時の依存入れ直しで streamlit
+#   プロセスが Segmentation fault（ネイティブABI不整合）＝Python例外でなく import 時のC拡張衝突。
+#   最有力＝numpy 2.x のABI破壊（numpy 1.x向けにビルドされた pyarrow 等と衝突）。
+#   → numpy を 1.x に固定して安定版へ戻す。Streamlit も動作実績のある 1.4x 帯に上限を付ける。
+streamlit>=1.40,<1.45
+anthropic>=0.40
+pandas>=2.0,<2.3
+numpy>=1.26,<2
+# ★pyarrow も固定（2026-07-14・FableA）：pyarrow 25.0.0 ＋ numpy 1.26 ＋ pandas 2.2 の組で
+#   st.table/st.dataframe の pandas→Arrow 変換（pandas_compat.convert_column）が Segmentation fault
+#   （クリーン環境のフルスイートで再現・pyarrow 19.0.1 に下げると解消を実測）。
+#   07-10 の numpy 固定と同じ「再デプロイ時の依存入れ直しで新版を引いて死ぬ」系の穴を先回りで塞ぐ。
+pyarrow>=14,<20
