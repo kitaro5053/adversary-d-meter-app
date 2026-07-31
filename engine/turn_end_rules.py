@@ -82,6 +82,14 @@ def mainlover_can_kill_protagonist(c) -> bool:
     return c.unrest >= 3 and c.anyaku >= 1
 
 
+# タイムトラベラーの敗北宣言が可能な友好の上限（KB: 50:128
+#   「【任意】最終日のターン終了フェイズに、このキャラクターに友好カウンターが**2つ以下**しか
+#    置かれていない場合、主人公を敗北させても良い」）。
+# ★主人公側の防御は「友好3以上を保つ」＝この値+1。友好禁止は無視される（KB: 50:127）＝
+#   脚本家は友好の付与をカードで止められない（A-4 の根拠）。
+TT_DEFEAT_GOODWILL_MAX: int = 2
+
+
 def timetraveler_can_defeat(c, is_final_day: bool) -> bool:
     """タイムトラベラーが【任意】で主人公を敗北させられるか（最終日・友好2以下）。KB: 50:128。"""
-    return is_final_day and c.goodwill <= 2
+    return is_final_day and c.goodwill <= TT_DEFEAT_GOODWILL_MAX

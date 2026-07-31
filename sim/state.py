@@ -24,6 +24,7 @@ from collections import Counter
 from engine.board import AREAS
 from engine.data import (
     CHARACTER_INITIAL_AREA,
+    forbidden_of,
     forced_loop_start_anyaku,
     initial_area_of,
     role_has_friendship_ignore,
@@ -296,6 +297,72 @@ def validate_script(script: Script) -> None:
             raise ValueError("大物がキャストに居る場合、oomono_territory（縄張りボード）の指定が必須")
     elif script.oomono_territory is not None:
         raise ValueError("大物がキャストに居ないのに縄張りが指定されている")
+
+
+# ---------------------------------------------------------------------------
+# 禁止エリア（単一ソース）
+# ---------------------------------------------------------------------------
+
+def current_forbidden(state: "GameState", name: str) -> frozenset[str]:
+    """`name` の**現在の**禁止エリア＝静的値から このループの解除を除いたもの。
+
+    - 静的値＝`engine.data.forbidden_of`（KB: 30 のキャラ個別データ）。
+    - 解除＝`state.forbidden_lifted`（医者の友好能力3「入院患者の禁止エリア解除」／
+      女の子の友好能力1。いずれも**このループ中**限りで、`start_next_loop` で消える）。
+
+    ★E-2（2026-07-29）：禁止エリアは「そのキャラが**移動できない**ボード」（KB: 00
+      「キャラクターカードの見方」）＝**移動の出所（行動カード／事件効果／友好能力）を問わない**。
+      移動を発生させる実装は静的な `forbidden_of` を直に引かず、必ず本関数を通すこと
+      （既存の同型実装＝`sim/effects.to_engine_board` / `sim/loop_race.py` の張り付き判定）。
+    """
+    if name in getattr(state, "forbidden_lifted", ()) or ():
+        return frozenset()
+    return forbidden_of(name) or frozenset()
+
+
+def current_forbidden_from_view(view: dict, name: str) -> frozenset[str]:
+    """`current_forbidden` の**公開情報版**（AIビュー用・単一ソース）。
+
+    ★A-78（2026-07-30）：AI（脚本家／主人公）は `GameState` を持たない＝`current_forbidden`
+      をそのまま呼べない。一方で**神視点を与えてはいけない**ので、`state.forbidden_lifted`
+      を直接読むのではなく、**公開履歴の `forbidden_lifted` イベント**から同じ値を再構成する。
+
+    - 静的値＝`engine.data.forbidden_of`（KB: 30。**キャラクターカードに印刷された公開情報**）。
+    - 解除＝医者の友好能力3（入院患者の禁止エリア解除）／女の子の友好能力1（KB: 20）。
+      どちらも**友好能力の使用は卓上で公開**＝`view["history"]` に載る（`sim/abilities.py`）。
+      効果は**このループ中**限りなので、`view["loop"]` と一致するイベントだけを見る
+      （同型の先行実装＝`agents/defense_plan._lifted_this_loop`）。
+    """
+    loop = view.get("loop")
+    for e in view.get("history", ()) or ():
+        if (e.get("event") == "forbidden_lifted" and e.get("name") == name
+                and e.get("loop") == loop):
+            return frozenset()
+    return forbidden_of(name) or frozenset()
+
+
+def missing_incident_boards_from_view(view: dict, name: str) -> frozenset[str]:
+    """事件「行方不明」で犯人 `name` を移動させられるボード＝**その事件が暗躍1を置ける先**。
+
+    条文＝「犯人を任意のボードに移動させる。その後、犯人のいるボードに暗躍1」（KB: 40:153 / 50）。
+    ★E-2（公式裁定 2026-07-29）＝この移動も**犯人の禁止エリアへは行えない**（KB: 00 禁止エリアの
+      定義／40 事件まわりの注意）。∴ 暗躍1が置けるのは**犯人が移動できるボードだけ**。
+    ★現在地は常に候補（`sim/effects.py` の実装と同一＝「移動しない」を選べる）＝候補は空にならない。
+      ∴ 入院患者・A.I. のような実質不動の犯人でも、**現在地のボードには必ず1つ供給できる**
+      （「供給が消える」のではなく「供給先が現在地に固定される」）。
+
+    ★本関数は**公開情報だけ**で決まる（禁止エリア＝カード記載／解除＝公開履歴／位置＝盤上の事実）。
+      主人公AIが使う場合、秘匿なのは「誰が犯人か」だけ＝呼び出し側が犯人候補を渡す責任を持つ。
+    ※未登場（area=None）のキャラは犯人として事件を起こせない（`sim/effects.py` は
+      `culprit.area` を使う）＝現在地の例外は付かず、禁止エリアを除いた集合を返す。
+    """
+    forb = current_forbidden_from_view(view, name)
+    here = None
+    for c in view.get("characters", ()) or ():
+        if c.get("name") == name:
+            here = c.get("area")
+            break
+    return frozenset(a for a in AREAS if a == here or a not in forb)
 
 
 # ---------------------------------------------------------------------------

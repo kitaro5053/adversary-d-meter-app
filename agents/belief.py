@@ -29,11 +29,19 @@ from functools import lru_cache
 from itertools import combinations
 from math import factorial
 
-from engine.data import ROLE_CLAUSE_ABILITY, is_shoujo
+from engine.data import (
+    ROLE_CLAUSE_ABILITY,
+    UNREFUSABLE_ABILITY_CHARS,
+    is_shoujo,
+)
 
 # 友好無視／絶対友好無視を持つ役職（拒否できるのはこの役職だけ＝拒否＝この役職の証拠）
 _IGNORE_ROLES = frozenset(r for r, c in ROLE_CLAUSE_ABILITY.items()
                           if c in ("友好無視", "絶対友好無視"))
+# ★B-101：**絶対**友好無視だけを持つ役職（＝【強制】必ず拒否する＝カルティスト/ウィッチ）。
+#   「拒否されずに解決した」の逆向き観測はこの集合にだけハード制約として効く（→_gw_resolved_chars）。
+_ABSOLUTE_IGNORE_ROLES = frozenset(r for r, c in ROLE_CLAUSE_ABILITY.items()
+                                   if c == "絶対友好無視")
 from sim.state import (
     BTX_ROLE_UNIVERSE,
     BTX_RULE_X_ROLES,
@@ -289,12 +297,54 @@ def _refused_chars(history: list[dict]) -> set[str]:
     return {e["character"] for e in history if e.get("event") == "goodwill_refused"}
 
 
+def _gw_resolved_chars(history: list[dict]) -> set[str]:
+    """★B-101：**拒否されずに解決した**友好能力の行使キャラ＝絶対友好無視ではない（ハード）。
+
+    KB根拠（`rules/` から一意に読める）：
+    - `rules/00_rules_core.md:174`「**絶対友好無視**（条文能力）：このキャラは主人公からの
+      友好能力使用を**必ず拒否する**」＝解決してしまった時点でその役職ではありえない。
+    - `rules/50_basic_tragedy_x.md:98-99`「友好無視＝拒否『できる』／絶対友好無視＝必ず拒否
+      『する』。拒否の判定は**能力を使うキャラ**の友好無視で行う（対象キャラではない）」。
+    - `rules/20_goodwill_abilities.md:24-25`「空撃ちは**絶対友好無視の判別に使える定番テク**」
+      ＝この推理筋は公式に想定されている。
+
+    ∴ 制約は**片側だけがハード**：
+    - 絶対友好無視（カルティスト／ウィッチ）＝【強制】必ず拒否 → 解決＝**除外できる**。
+    - 通常の友好無視（クロマク/キラー/ファクター/マイナス等）＝【任意】＝見送れる →
+      解決しても**何も言えない**（制約にしない。逆向き＝`_refused_chars` の A-42 情報衛生と対称）。
+
+    除外例外＝`UNREFUSABLE_ABILITY_CHARS`（イレギュラー/ナース/妹/コピーキャット＝カード文で
+    「友好無視/絶対友好無視で拒否されない」と明記・`rules/20:109` `rules/20:242`／`engine/data.py`）。
+    これらのキャラの能力は絶対友好無視でも通る＝解決は何の証拠にもならない。
+
+    ※`goodwill_used`（宣言）ではなく `goodwill_resolved`（解決）を見る＝拒否された宣言を
+      誤って「解決」と読まないため（`sim/flow.py` は拒否時に resolved を発行しない）。
+    """
+    return {e["character"] for e in history
+            if e.get("event") == "goodwill_resolved" and e.get("character")
+            and e["character"] not in UNREFUSABLE_ABILITY_CHARS}
+
+
 def _combo_weight_with_refusals(cast, slots, fixed, kp_shoujo, refused, _memo=None):
     """拒否されたキャラを『友好無視系の役職のどれか』に割り当てる場合分けで厳密に数える。
 
     counting方式は任意の部分集合制約を直接扱えないため、拒否キャラ（少数）×友好無視役職
     （少数）の割当を列挙し、各割当を fixed に固定して重みを合算する（スロット超過は0で自然に落ちる）。
+
+    ★B-97：**fixed に既に載っている拒否キャラも検査する**。上位の `_sum_role_in` /
+    `_sum_role_all_in`（KP除外・フレンド除外・SKペア・カルティスト・ML等）が拒否キャラを
+    友好無視を持たない役職（例：キーパーソン）に固定して降りてくると、従来はそのキャラが
+    `todo` から外れて拒否制約が丸ごと素通りしていた（実測＝実戦棋譜 L2D1 の拒否の直後も
+    医者のキーパーソンが 0.245 残存＝推論が1観測ぶん遅れる原因。tt_step の refused 除外は
+    この穴のTT専用の対症療法だった）。拒否は**ハード制約**（rules/50:98-99＝拒否できるのは
+    「能力を使うキャラ」の友好無視／絶対友好無視のみ）ゆえ、非友好無視役職に固定された
+    拒否キャラが居る世界は矛盾＝重み0。
+    ※逆向き（「拒否しなかった」）は制約にしない＝友好無視は【任意】で見送れる（A-42の情報衛生）。
     """
+    for c in refused:
+        r = fixed.get(c)
+        if r is not None and r not in _IGNORE_ROLES:
+            return 0, {}
     todo = [c for c in refused if c not in fixed]
     if not todo:
         return _combo_weight_and_marginals(cast, slots, fixed, kp_shoujo, _memo)
@@ -406,6 +456,104 @@ def _public_role_constraints(history: list[dict], cast=()) -> tuple[set | None, 
     return kuro, ml, board_sets
 
 
+#: B-61 の適用範囲（掃引で決定・`docs/監査_B61_ml_strict移植_2026-07-26.md`）。
+#:   "elim" ＝**採用値**。ML専用証拠が1件でもあれば「ミスリーダー不在のルール組」を消す
+#:           だけに使う（present の中身は使わない）。両ベンチ防衛非退行・3日meanも同値・
+#:           5日は1局も動かず・ML分離系の発火頻度も不変（B-52 159→159）でML較正だけ改善。
+#:   "both" / "all" ＝ present制約も使う（起票時の本丸＝両在組の75イベント）。**不採用**：
+#:           beliefは鋭くなるが B-52分離の発火が 159→293（+84%）に増え、btx_future の
+#:           L1防衛8局が L2/L3 に後退（防衛数は不変・meanは 2.038→2.092 と悪化）＝
+#:           belief-ml-v2 当時の「下流の席経済が旧beliefの誤り方に共適応」の再現。
+#:   "off"  ＝無効（導入前と bit-for-bit 同一）。
+_B61_SCOPE = "elim"
+
+#: ★B-101（友好能力の「解決」の逆向き観測・2026-07-29）のスコープ。
+#:   "on"  ＝拒否されずに**解決した**友好能力の行使キャラを絶対友好無視役職から除外する。
+#:   "off" ＝無効（導入前と bit-for-bit 同一）＝**既定**。
+#: ★2026-07-30（ユーザー裁定「B101もON」）＝既定を **"on"** に切り替えた。
+#:   KB根拠＝`rules/00:174`（絶対友好無視＝必ず拒否する）／`rules/50:98-99`（拒否判定は
+#:   能力を使うキャラで行う）／`rules/20:24-25`（**空撃ちは絶対友好無視の判別に使える定番テク**
+#:   ＝公式が想定した推理筋）。∴ 拒否されずに解決した友好能力の行使キャラが
+#:   カルティスト／ウィッチでありうる、という可能世界は**規則上そもそも存在しない**。
+#: ★較正の実測結果（詳細＝`docs/監査_B101_ON_カルティスト閾値の再較正_2026-07-30.md`）：
+#:   前担当が疑った「カルティスト閾値ゲート（0.1/0.25/0.7）の較正ずれ」**ではなかった**。
+#:   5日級 `fs5_guard` の退行9局の実体は、(c2b) カルティスト剥がし_候補 **72.00 の
+#:   6人フラット同点帯の籤**で、B-101 が帯から1人（正しく）取り除くと籤の出目が変わる、というもの。
+#:   対照実験＝B-101 OFF のまま帯から**無関係な1人**を人為的に外すだけで同規模の退行が出る／
+#:   逆に**真犯人（医者）を外す**と退行はほぼ出ない＝この局の 2.000 は防御力ではなく籤。
+#:   ∴ 閾値の再較正では回収できない（掃引で非退行点なし）。
+_B101_SCOPE = "on"
+
+#: ファクターがミスリーダーの追加能力（不安+1）を得る学校の暗躍数
+#: （`sim/legal.py` 正典＝`state.board_anyaku["学校"] >= 2`・KB 50:174 / 60 A10）。
+_FACTOR_ML_ANYAKU = 2
+
+
+def _school_anyaku_live(history: list[dict]) -> list[bool]:
+    """history と同じ長さのリスト＝各イベント『時点』で **ファクターがミスリーダー能力を
+    持ちえたか**（＝学校の暗躍カウンターが2以上か）。ボードの暗躍カウンターは公開情報。
+
+    ★B-61（belief-ml-v2 の②のみを移植・2026-07-26）：mm能力フェイズの不安ソースは
+    ミスリーダー／ファクター（学校暗躍≥2）／医者の友好能力の3つだけ（KB: 60 B-8/B-6・
+    `sim/legal.py`）。**学校暗躍が2未満ならファクター起源は原理的に不可**＝医者起源も
+    否定できていれば、その不安は**ミスリーダー由来と確定**できる（→ `_ml_strict`）。
+    `_doctor_ability_live` と同じ「イベント適用**前**の値」を並べる流儀（out.append が
+    delta 適用より先）。ループ開始で全カウンターは0にリセット（KB: 00）。
+
+    ★健全性＝公開履歴からの復元が真値と一致することを実測で確認済み（2026-07-26・
+    両ベンチ200局の mm能力フェイズ発動時点 **927件で不一致0**）。復元が過小になると
+    「ファクター不可能」を誤断定して真の可能世界を消す＝この一致がB-61の前提。
+    ボード暗躍の増加は `state.pub` で必ず公開される（行動解決 `flow` ／mm能力
+    `effects` ／事件効果 ／能力による除去 -1 まで全て event="anyaku"）。
+    """
+    out: list[bool] = []
+    an = 0
+    for e in history:
+        if e.get("event") == "loop_start":
+            an = 0                       # ループ開始＝カウンターは全リセット（KB: 00）
+        out.append(an >= _FACTOR_ML_ANYAKU)
+        if e.get("event") == "anyaku" and e.get("target") == "学校":
+            an = max(0, an + int(e.get("delta", 0) or 0))
+    return out
+
+
+def _ml_strict(history: list[dict], cast=()) -> set | None:
+    """**ミスリーダー専用**の present 制約（B-61）＝『ML はこの集合の中に居る』。
+
+    `_public_role_constraints` が返す `ml`（弱証拠）は「ミスリーダー **または** ファクター」
+    の候補集合なので、**両方 slots にあるルール組では ML の特定に使えない**
+    （現状 `ml_step` はその場合に制約を丸ごと捨てている＝両ベンチ200局で75イベント分の
+    証拠を破棄していた・`docs/監査_棚の再発掘_2026-07-26.md` §5-1）。
+
+    ここでは供給源を1つに絞れる不安イベントだけを ∩ する：
+      (1) mm能力フェイズの不安+（`_public_role_constraints` と同じ入口）
+      (2) **医者起源が不可能**＝医者が present に居ない or その時点の友好<2（B-25と同基準）
+      (3) **ファクター起源が不可能**＝その時点の学校暗躍<2（`_school_anyaku_live`）
+    残る供給源はミスリーダーだけ＝present（＋B-30の大物緩和）に ML が居る。
+    該当イベントが1件も無ければ None（制約なし）。
+    """
+    strict: set | None = None
+    _relax = _oomono_relax(cast)          # B-30：大物のテリトリー投射（遠隔で不安+1しうる）
+    doc_live = _doctor_ability_live(history)
+    fa_live = _school_anyaku_live(history)
+    for _i, e in enumerate(history):
+        if (e.get("phase") != "mastermind_ability" or e.get("event") != "unrest"
+                or e.get("delta", 0) <= 0):
+            continue
+        present = e.get("present")
+        if present is None:
+            continue
+        s = set(present)
+        if "医者" in s and doc_live[_i]:
+            continue                      # 医者の友好能力がありえた＝曖昧（B-25と同基準）
+        if fa_live[_i]:
+            continue                      # 学校暗躍≥2＝ファクター起源もありえた＝ML専用でない
+        s_ml = s | _relax
+        strict = s_ml if strict is None else (strict & s_ml)
+    return strict
+
+
+
 def _ml_forced(history: list[dict], cast=()) -> set:
     """mm能力フェイズの不安イベントで present が単独（≤1人）だったキャラ＝その不安の供給源は
     **ミスリーダー か ファクター 確定**（唯一の在席者が源＝KB。B-18）。両方 slots のBTXルール組で
@@ -476,6 +624,19 @@ def _phase_kuromaku_unions(history: list[dict], cast=()) -> list[set]:
         if len(sets) >= 2:
             unions.append(set().union(*sets))
     return unions
+
+
+def _mm_board_supply_candidates(e: dict, cast=()) -> set:
+    """★B-113：mm能力フェイズの**ボード暗躍イベント e** を「クロマク能力の供給」として
+    説明しうる供給者候補（公開情報のみ）。
+
+    クロマクは**同エリアのキャラ1人 or 自ボード**にしか置けない（rules/40:86）＝ボード A への
+    供給者はその瞬間 A に居た生存キャラ（present）に限られる。例外＝大物のテリトリー投射
+    （B-30・present に居なくてもテリトリーへ遠隔供給しうる）＝`_oomono_relax` で常に候補へ
+    足す（過剰包含＝「噂と誤確定しない」健全側。イベントに発動エリア欄が無いため
+    テリトリー一致では絞らない＝B-30 の既存注記と同じ扱い）。
+    """
+    return set(e.get("present") or ()) | _oomono_relax(cast)
 
 
 def _clean_defeat_constraints(history: list[dict]) -> tuple[list[set], bool]:
@@ -574,6 +735,15 @@ def _turn_end_death_constraints(
     for e in history:
         if (e.get("event") == "death" and e.get("phase") == "turn_end"
                 and e.get("present")):
+            # ★#11検死（belief崩壊・2026-07-26）：アルバイトは**特性死**（上のカウンター
+            #   合計≥3で死亡・KB:30・ターン終了判定）がある＝役職説明（SK/キラー/ウイルス）を
+            #   要求してはならない。deathイベントには goodwill/guard が乗らず「特性死か否か」を
+            #   外形判定できないため、アルバイトの死は常に制約化しない（健全側＝真の世界を
+            #   消さない）。実測＝random_BTX#11 L3D2 の特性死（3人以上の場×被害者暗躍0＝
+            #   キラー枝も不成立）で全可能世界が矛盾し、L3D3以降 combos=0・p_future=0 の
+            #   belief全崩壊（不変量「真配役・真ルールは消えない」の破れ）を起こしていた。
+            if e.get("name") == "アルバイト":
+                continue
             others = frozenset(set(e["present"]) - {e["name"]})
             if not others:
                 continue
@@ -817,6 +987,237 @@ def _pair_survivals(history: list[dict]) -> list[tuple[frozenset, frozenset]]:
     return out
 
 
+def _lovers_pair_constraints(history: list[dict]) -> list[tuple[frozenset, str]]:
+    """★B-85：「誰かが死亡 → 別の誰かに不安+6」＝ラバーズ対の**公開事実**（rules/50:153,159）。
+
+    KB（50 ラバーズ／メインラバーズ・現物確認）：
+      - 【強制】**メインラバーズが死亡した時**、ラバーズに不安カウンターを6つ置く。
+      - 【強制】**ラバーズが死亡した時**、メインラバーズに不安カウンターを6つ置く。
+      ＝**対の向きは両方向**＝「死んだ方」「受け取った方」のどちらがラバーズかは +6 だけでは決まらない。
+      - 両者が同時死亡した場合は何も起きない（60:A19）＝観測自体が立たない＝制約も生まれない。
+
+    よって健全（真を排除しない）に言えるのは**対の同一性**だけ：
+      受け手Y ∈ {ラバーズ, メインラバーズ} かつ 相方（もう一方の役職）∈ その日の死者。
+    向きは他の証拠（例：主人公死亡＝メインラバーズ【任意】の絞り込み）が決める。
+
+    返り値: [(その日の死者の集合, +6の受け手), ...]
+    ★死者が複数居る日は集合のまま渡す＝「相方はこの中の誰か」＝過剰確定を避ける。
+    ★+6は恋愛風景の【強制】でしか発生しない（unrestのdelta==6を出す経路は他に無い）＝
+      恋愛風景を持たない組でこの観測が立てば、その組は矛盾＝0（enumerator側で扱う）。
+    """
+    out: list[tuple[frozenset, str]] = []
+    seen: set[tuple[frozenset, str]] = set()
+    # (loop, day) ごとに、その日に観測された死者を集める（+6より前の死だけが相方たりうる）。
+    for e in history:
+        if not (e.get("event") == "unrest" and e.get("delta") == 6):
+            continue
+        td = (e.get("loop"), e.get("day"))
+        recv = e.get("target")
+        if not recv:
+            continue
+        dead_before = frozenset(
+            d.get("name") for d in history
+            if d.get("event") == "death" and (d.get("loop"), d.get("day")) == td
+            and d.get("name") and d.get("name") != recv
+        )
+        if not dead_before:
+            continue          # 相方が特定できない＝制約を作らない（健全側）
+        key = (dead_before, recv)
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# ★B-102：事件効果の公開結果から犯人を絞る（横断・2026-07-29）
+# ---------------------------------------------------------------------------
+# FS/BTX の全9事件を条文（rules/40:146-154 の事件表・rules/50:198,218）で分類した。
+# 「公開情報だけで犯人について何が言えるか」は次の4型しかない：
+#   mover          … 効果が**犯人自身を動かす**＝move イベントの主＝犯人。
+#                    行方不明「犯人を任意のボードに移動させる」（40:153）。
+#   victim         … 効果で**犯人自身が死ぬ**＝death イベントの主＝犯人。
+#                    自殺「犯人は死亡する」（40:150）。
+#   same_area      … 効果が**犯人と同エリアの犯人以外**を対象にする＝犯人∈死亡時の同席−死者。
+#                    殺人事件「可能ならば犯人と同一のエリアにいる犯人以外の任意のキャラクター
+#                    1人を死亡させる」（40:148）。
+#   effect_present … 蝶の羽ばたき（50:218「犯人と同一のエリアにいるキャラクター1人」）＝
+#                    **既存実装**（sim が incident_effect に present を載せる）。ここでは扱わない。
+# 残る5事件は効果の対象が「任意のキャラクター」「暗躍≥2のキャラ」「病院にいる全員」「神社の
+# ボード」＝**犯人の位置にも同一性にも触れない**＝公開情報から犯人について何も言えない。
+#
+# ---------------------------------------------------------------------------
+# ★B-108：negative 方向（効果が出た → 犯人は黒猫ではない）を同じ横断表に足す（2026-07-30）
+# ---------------------------------------------------------------------------
+# 起票＝ユーザー実戦フィードバック「L1D4 キーパーソンが遠隔殺人で死んだのに犯人候補から
+# 黒猫が消えていない」。B-102 は「positive 方向にだけ使う」ガードを置いたため、
+# **『効果の発生を観測した』という強い根拠**を使えていなかった（＝取りこぼし）。
+# B-102 の当時の理由は「イベントの不在に依拠する推論はログ形式変更に脆い」だったが、
+# 本件は**不在ではなく発生の観測**＝根拠の強さが逆である。
+#
+# KB 根拠（一意に読める）：
+#   `rules/30_characters.md:71-77`「黒猫の特性（現物確認済み）」
+#     特性2＝**このキャラクターが犯人の事件の事件効果は「何も起きない」に変更される**。
+#   `rules/60_faq_rulings.md:196`（E-7 の1番）＝どの事件でも効果は「何も起きない」に変更される
+#     （発生宣言はされる）。
+# ∴ **事件効果が実際に盤面に現れたなら、その事件の犯人は黒猫ではない**【ハード制約】。
+#
+# ★★逆は成り立たない＝**実装しない**。KB `60:E-7`「事件は発生したのに何も起きなかった」の
+#   原因は黒猫を含めて5つある：
+#     1 犯人が黒猫／2 殺人事件で同エリアに対象が居ない（40:148「可能ならば」）／
+#     3 対象が不死＝タイムトラベラー（40:148 の★・50:192・60 A26）／
+#     4 対象に護衛カウンター（死亡の代わりに護衛-1）／
+#     5 病院の事件で病院に暗躍が無い（60 E-1）・遠隔殺人で暗躍2以上が居ない（40:152 条件文）。
+#   ∴「効果が出なかった → 黒猫」は**誤り**。本実装は **効果を観測した方向の一方向のみ**で、
+#   イベントの**不在**からは何も結論しない（B-102 の positive ガードもそのまま維持）。
+#
+# 表の第2要素＝「その事件の効果が**実際に解決した**ことの公開証拠となるイベント種」。
+# 事件ごとに効果が違う＝証拠も違う（死亡・カウンター配置・移動）。`sim/effects.py:
+# _apply_incident_effect` が `_pub`（＝卓上に見える公開イベント）で出すものだけを採る。
+#   ★「何も起きなかった」通知（`incident_effect` の note）は**証拠にしない**
+#     ＝上記5原因のどれでも出る（`sim/effects.py:383,406,457,469`）。
+#   ★カウンター系（anyaku/unrest/goodwill）は **delta>0（＝配置）に限る**。
+#     除去（流布の友好-2 等）は相手の残数が0なら盤面が動かず観測できない（00 カウンターは
+#     0未満にならない）。配置なら必ず盤面に現れる。
+#   ★死亡が護衛で肩代わりされた場合は `guard_consumed`（公開＝護衛カウンターが1つ減る）が
+#     証拠になる（60 E-7 の4「厳密には護衛-1が起きている」）。
+#   ★不死（タイムトラベラー）が対象の場合は `death_prevented` が**非公開**（`_sec`）＝
+#     公開イベントが1つも出ない＝この経路は働かない（黒猫と区別できない＝正しい振る舞い）。
+_INCIDENT_CULPRIT_INFERENCE: dict[str, tuple[str | None, tuple[str, ...]]] = {
+    # 事件名: (positive＝犯人を名指しする型, negative＝「効果が解決した」公開証拠のイベント種)
+    # 40:153 犯人を任意のボードに移動させる＋犯人のいるボードに暗躍+1（暗躍は必ず置かれる）
+    "行方不明": ("mover", ("move", "anyaku")),
+    # 40:150 犯人は死亡する
+    "自殺": ("victim", ("death", "guard_consumed")),
+    # 40:148 犯人と同一エリアの犯人以外1人を死亡
+    "殺人事件": ("same_area", ("death", "guard_consumed")),
+    # 50:218 犯人と同一エリアの1人にカウンター1つ（既存の incident_effect.present 経路）
+    "蝶の羽ばたき": ("effect_present",
+                     ("incident_effect", "anyaku", "unrest", "goodwill")),
+    # 40:149 任意のキャラ2人（犯人と無関係）＝不安+2／暗躍+1
+    "不安拡大": (None, ("unrest", "anyaku")),
+    # 40:154 任意のキャラ2人（犯人と無関係）＝友好-2／友好+2（配置側のみ証拠）
+    "流布": (None, ("goodwill",)),
+    # 40:152 暗躍≥2の任意1人（犯人と無関係）★ユーザー報告（B-108）の事件
+    "遠隔殺人": (None, ("death", "guard_consumed")),
+    # 40:151 病院にいる全員（犯人と無関係）＋暗躍2以上なら主人公も
+    "病院の事件": (None, ("death", "guard_consumed", "protagonist_death")),
+    # 50:198 神社に暗躍+2（キャラを対象にしない）
+    "邪気の汚染": (None, ("anyaku",)),
+}
+
+#: 黒猫（KB: 30「黒猫の特性」特性2）。役職ではなく**キャラ**＝配役に依らず常に同じ。
+_KURONEKO = "黒猫"
+
+
+def _occurred_incidents(history: list[dict]) -> dict[tuple, str]:
+    """(loop, day) → 実際に発生した事件名（`occurs: True` の公開アナウンス）。"""
+    out: dict[tuple, str] = {}
+    for e in history:
+        if e.get("event") == "incident" and e.get("occurs") and e.get("name"):
+            out[(e.get("loop"), e.get("day"))] = e["name"]
+    return out
+
+
+def _is_effect_evidence(e: dict, kinds: tuple[str, ...]) -> bool:
+    """イベント e が「事件効果が実際に解決した」ことの公開証拠か（kinds＝その事件の証拠種）。"""
+    ev = e.get("event")
+    if ev not in kinds:
+        return False
+    if ev in ("anyaku", "unrest", "goodwill"):
+        return (e.get("delta") or 0) > 0      # 配置のみ（除去は残数0なら観測不能）
+    if ev == "incident_effect":
+        # 「何も起きなかった」通知は証拠にしない＝不在に依拠しないための要（★逆方向の防止）
+        return bool(e.get("target") or e.get("present"))
+    return True                                # death / guard_consumed / move / protagonist_death
+
+
+def _incident_effect_observed_days(history: list[dict]) -> set[int]:
+    """★B-108：**事件効果が実際に盤面に現れた**日の集合（黒猫を犯人候補から外すのに使う）。
+
+    黒猫が犯人なら事件効果は「何も起きない」に変更される（KB: 30 特性2）＝
+    ∴ 効果を観測できた日の犯人は黒猫ではない。**この一方向のみ**（逆は 60 E-7 より不成立）。
+
+    ガード（B-102 と同じ思想）：
+    - `phase == "incident"` のみ＝A.I. の友好能力による事件効果の再解決（phase=goodwill_ability）は
+      犯人が別（60 E-6＝「発生」ともみなさない）＝混ぜない。
+    - その (loop, day) の事件が `occurs: True` でアナウンスされていること。
+    - 証拠は事件ごとの公開イベント種に限る（`_INCIDENT_CULPRIT_INFERENCE` の第2要素）。
+    - ★イベントの**不在**は一切使わない（＝「効果が出なかった→黒猫」は実装しない）。
+    """
+    occurred = _occurred_incidents(history)
+    days: set[int] = set()
+    for e in history:
+        if e.get("phase") != "incident":
+            continue
+        day = e.get("day")
+        name = occurred.get((e.get("loop"), day))
+        if day is None or not name:
+            continue
+        row = _INCIDENT_CULPRIT_INFERENCE.get(name)
+        if row is not None and _is_effect_evidence(e, row[1]):
+            days.add(day)
+    return days
+
+
+#: アルバイト系の犯人性は アルバイト⇄アルバイト？ で継承する（`sim/effects.py:_effective_culprit`
+#: ／KB: 30 アルバイト？特性「犯人かどうかはアルバイトと一致」）＝観測された当人に確定させず
+#: 両方を残す（健全側＝真の犯人を消さない）。
+_ALUBAITO_PAIR = frozenset({"アルバイト", "アルバイト？"})
+
+
+def _alubaito_relax(s: set) -> frozenset:
+    return frozenset(s | _ALUBAITO_PAIR) if (s & _ALUBAITO_PAIR) else frozenset(s)
+
+
+def _incident_effect_culprit_sets(history: list[dict]) -> list[tuple[int, frozenset]]:
+    """★B-102：事件効果の**公開結果**から「その日の犯人はこの中」を読む。返り値 [(day, 候補集合)]。
+
+    ユーザー報告（実戦棋譜 2026-07-29）＝「L1D2 行方不明（サラリーマンが移動した）を見ているのに
+    犯人候補から黒猫が外れていない」。belief は蝶の羽ばたき（incident_effect.present）しか
+    使っておらず、**効果そのものが犯人を名指しする型**（上の横断表）を取りこぼしていた。
+
+    健全側のガード（真の犯人を消さないための条件。全て意図的）：
+    - **positive 方向のみ**：効果が観測できた時だけ制約を作る。観測できない（黒猫が犯人＝
+      「何も起きなかった」／護衛消費／不死で死ねない／対象候補が空）ケースから逆向きの
+      結論は出さない。∴ 黒猫が犯人なら effect イベントが出ない＝この経路自体が働かない。
+    - **`phase == "incident"` のみ**：A.I.の友好能力による事件効果の再解決
+      （`sim/abilities.py`・phase=goodwill_ability）は犯人が別＝混ぜない。
+    - **従者は使わない**：従者の身代わり死（KB: 30・`sim/effects.py:kill_character`）は
+      **非公開**＝「死んだのは従者」でも真の対象は主（お嬢様/大物）でありうる。
+      従者が絡む観測（death/move の主が従者）は丸ごと捨てる。
+    - **アルバイト⇄アルバイト？は緩める**（`_alubaito_relax`）。
+    """
+    occurred = _occurred_incidents(history)
+    out: list[tuple[int, frozenset]] = []
+    seen: set[tuple[int, frozenset]] = set()
+    for e in history:
+        if e.get("phase") != "incident":
+            continue
+        _row = _INCIDENT_CULPRIT_INFERENCE.get(
+            occurred.get((e.get("loop"), e.get("day"))) or "")
+        kind = _row[0] if _row is not None else None
+        ev, who, day = e.get("event"), e.get("name"), e.get("day")
+        if not who or who == "従者" or day is None:
+            continue
+        if kind == "mover" and ev == "move":
+            s = _alubaito_relax({who})           # 動かされた当人＝犯人
+        elif kind == "victim" and ev == "death":
+            s = _alubaito_relax({who})           # 死んだ当人＝犯人
+        elif kind == "same_area" and ev == "death" and e.get("present"):
+            rest = set(e["present"]) - {who}     # 犯人∈死亡時の同席の顔ぶれ−死者
+            if not rest:
+                continue
+            s = _alubaito_relax(rest)
+        else:
+            continue
+        key = (day, s)
+        if key not in seen:      # 同一制約の再観測は情報を増やさない＝間引く
+            seen.add(key)
+            out.append(key)
+    return out
+
+
 def _sum_role_in(cast, slots, kp_shoujo, refused, role: str, cand: set, fixed: dict, then):
     """『役職 role の担い手は cand の中に居る』制約：候補への割当を場合分けして合算。
 
@@ -876,7 +1277,9 @@ def _combo_weight_full(cast, slots, fixed, kp_shoujo, refused, rule_xs,
                        kp_excluded=frozenset(), friend_excluded=frozenset(),
                        pair_survivals=(), tt_excluded=frozenset(), pd_cons=(),
                        cult_sets=(), tt_sets=(), kuro_union_sets=(),
-                       ml_forced=frozenset(), kp_forced=frozenset(), _memo=None):
+                       ml_forced=frozenset(), kp_forced=frozenset(),
+                       ml_strict=None, lovers_cons=(), gw_resolved=frozenset(),
+                       _memo=None):
     """位置制約（present）＋ターン終了死＋拒否制約を重ねた厳密な数え上げ。
 
     ★kp_forced（B-34）＝「1死＋ループ終了効果」の死者だが、この組に**ファクター枠がある**ため
@@ -896,6 +1299,22 @@ def _combo_weight_full(cast, slots, fixed, kp_shoujo, refused, rule_xs,
 
     def base(fx):
         return _combo_weight_with_refusals(cast, slots, fx, kp_shoujo, refused, _memo)
+
+    # ★B-101：拒否されずに解決した友好能力の行使キャラは**絶対友好無視の役職ではない**
+    #   （00:174【必ず拒否する】/ 50:98-99 判定は「能力を使うキャラ」の役職）。
+    #   該当役職（カルティスト/ウィッチ）の担い手【全員】を gw_resolved の外に置く＝
+    #   `_sum_role_all_in` で場合分けして厳密に数える（スロット数2以上でも正しい）。
+    #   ★通常の友好無視は【任意】＝見送れる＝制約にしない（片側だけがハード）。
+    _abs_ignore_roles = (sorted(r for r in _ABSOLUTE_IGNORE_ROLES if r in slots)
+                         if gw_resolved else [])
+
+    def abs_ignore_step(fx, i=0):
+        if i >= len(_abs_ignore_roles):
+            return base(fx)
+        role = _abs_ignore_roles[i]
+        cand = set(cast) - set(gw_resolved)
+        return _sum_role_all_in(cast, slots, kp_shoujo, refused, role, cand, fx,
+                                lambda f: abs_ignore_step(f, i + 1))
 
     def _acc(pairs):
         total = 0
@@ -955,7 +1374,7 @@ def _combo_weight_full(cast, slots, fixed, kp_shoujo, refused, rule_xs,
 
     def pair_step(fx, i=0):
         if i >= len(pair_cons):
-            return base(fx)
+            return abs_ignore_step(fx)
         con = pair_cons[i]
         nxt = lambda f: pair_step(f, i + 1)  # noqa: E731
         branches = []
@@ -1003,10 +1422,32 @@ def _combo_weight_full(cast, slots, fixed, kp_shoujo, refused, rule_xs,
         return _sum_role_in(cast, slots, kp_shoujo, refused, "カルティスト",
                             set(cult_sets[i]), fx, lambda f: cult_step(f, i + 1))
 
+    def lovers_step(fx, i=0):
+        """★B-85：死亡→不安+6 の対（rules/50:153,159）。対の同一性だけを課す（向きは不問）。"""
+        if i >= len(lovers_cons):
+            return cult_step(fx)
+        dead, recv = lovers_cons[i]
+        nxt = lambda f: lovers_step(f, i + 1)  # noqa: E731
+        # +6 は恋愛風景の【強制】でしか起きない＝両役職の枠が無い組はこの観測を説明できない。
+        if "ラバーズ" not in slots or "メインラバーズ" not in slots:
+            return 0, {}
+        branches = []
+        # 向き①：受け手=メインラバーズ ∧ 死者(の誰か)=ラバーズ
+        branches.append(_sum_role_in(
+            cast, slots, kp_shoujo, refused, "メインラバーズ", {recv}, fx,
+            lambda f: _sum_role_in(cast, slots, kp_shoujo, refused,
+                                   "ラバーズ", set(dead), f, nxt)))
+        # 向き②：受け手=ラバーズ ∧ 死者(の誰か)=メインラバーズ
+        branches.append(_sum_role_in(
+            cast, slots, kp_shoujo, refused, "ラバーズ", {recv}, fx,
+            lambda f: _sum_role_in(cast, slots, kp_shoujo, refused,
+                                   "メインラバーズ", set(dead), f, nxt)))
+        return _acc(branches)
+
     def pd_step(fx, i=0):
         # 主人公死亡（ターン終了）＝キラー（暗躍≥4の中）∨ メインラバーズ（不安3暗躍1の中）
         if i >= len(pd_cons):
-            return cult_step(fx)
+            return lovers_step(fx)
         killers, lovers = pd_cons[i]
         nxt = lambda f: pd_step(f, i + 1)  # noqa: E731
         branches = []
@@ -1057,10 +1498,45 @@ def _combo_weight_full(cast, slots, fixed, kp_shoujo, refused, rule_xs,
         return _acc(branches)  # どの枝も成立しない組は矛盾＝0
 
     def ml_step(fx):
-        if ml_set is None:
-            return kp_step(fx)
         has_ml = "ミスリーダー" in slots
         has_fa = "ファクター" in slots
+        # ★B-61：ML専用証拠（学校暗躍<2＝ファクター起源が不可能な mm能力フェイズの不安）。
+        #   弱証拠 ml_set は「ML **または** ファクター」なので両在組では使えないが、
+        #   ml_strict は供給源がMLに一意＝両在組にも効き、ML不在組は矛盾にできる。
+        _strict = ml_strict if _B61_SCOPE != "off" else None
+        if _strict is not None:
+            if not has_ml:
+                # ファクターでも医者でも説明できない不安がある＝MLの居ない組は成立しない
+                return 0, {}
+            if _B61_SCOPE == "elim" or (_B61_SCOPE == "both" and not has_fa):
+                _strict = None              # 消去だけ／両在組以外は present制約を使わない
+        if _strict is not None:
+            # 実効集合＝ファクター不在組では弱証拠 ml_set も ML の制約として使える（∩で最強）。
+            # 両在組では ml_set がファクター起源を含みうる＝ml_strict 単独で使う。
+            ml_eff = (_strict if (ml_set is None or has_fa)
+                      else (ml_set & _strict))
+            if has_fa:
+                # ★B-18（単独present＝ML or ファクター確定）と併用する：
+                #   容疑者が1人なら「その1人がML」／「その1人がファクター（＝MLは他の
+                #   ml_strict 候補）」の**排反2枝**で厳密に数える（どちらの制約も落とさない）。
+                cand_forced = ml_forced - set(fx)
+                if len(cand_forced) == 1:
+                    c = next(iter(cand_forced))
+
+                    def _ml_elsewhere(f, _c=c):
+                        return _sum_role_in(cast, slots, kp_shoujo, refused,
+                                            "ミスリーダー", ml_eff - {_c},
+                                            f, kp_step)
+
+                    return _acc([
+                        _sum_role_in(cast, slots, kp_shoujo, refused,
+                                     "ミスリーダー", ml_eff & {c}, fx, kp_step),
+                        _sum_role_in(cast, slots, kp_shoujo, refused,
+                                     "ファクター", {c}, fx, _ml_elsewhere)])
+            return _sum_role_in(cast, slots, kp_shoujo, refused,
+                                "ミスリーダー", ml_eff, fx, kp_step)
+        if ml_set is None:
+            return kp_step(fx)
         if has_ml and not has_fa:
             return _sum_role_in(cast, slots, kp_shoujo, refused,
                                 "ミスリーダー", ml_set, fx, kp_step)
@@ -1209,6 +1685,9 @@ def _recompute_sig(cast, set_name, history) -> str:
     h.update(repr(tuple(cast)).encode("utf-8"))
     h.update(set_name.encode("utf-8"))
     h.update(repr(history).encode("utf-8"))
+    # ★モジュール全体のトグル（_recompute の結果を変える）を署名に含める＝トグルを切り替えた
+    #   テスト/掃引で**前のトグルの結果を引く取り違え**を塞ぐ（B-101 で追加。B-61 も同型）。
+    h.update(f"|B61={_B61_SCOPE}|B101={_B101_SCOPE}".encode("utf-8"))
     return h.hexdigest()
 
 
@@ -1234,6 +1713,8 @@ class Belief:
         self._alive_combos = list(self._all_combos)
         self._weights: list = []
         self._marginals: dict = {}
+        # ★B-113：噂消費証明のメモ（observe ごとにクリア。キー=(loop, len(history))）
+        self._rumor_spent_cache: dict = {}
         self._recompute()
 
     def register_soft_evidence(self, ev) -> None:
@@ -1262,6 +1743,7 @@ class Belief:
 
     def observe(self, history: list[dict]) -> None:
         self._history = list(history)
+        self._rumor_spent_cache = {}   # ★B-113：履歴が差し替わった＝メモ無効化
         # ★ソフト証拠はインスタンス固有＝共有キャッシュは使えない（非空時はバイパス）。
         if self._soft_evidence:
             self._recompute()
@@ -1287,13 +1769,18 @@ class Belief:
         elim_y = _rule_y_eliminations(self._history)
         sig = _mm_phase_signals(self._history)
         refused = _refused_chars(self._history)
+        # ★B-101（既定OFF）：拒否されずに解決した友好能力＝行使キャラは絶対友好無視ではない。
+        gw_resolved = (frozenset(_gw_resolved_chars(self._history))
+                       if _B101_SCOPE != "off" else frozenset())
         kuro_set, ml_set, board_sets = _public_role_constraints(self._history, self.cast)
         kuro_unions = _phase_kuromaku_unions(self._history, self.cast)
         ml_forced = _ml_forced(self._history, self.cast)
+        ml_strict = _ml_strict(self._history, self.cast)   # B-61：ML専用のpresent制約
         allowed_y_sets, tt_required = _clean_defeat_constraints(self._history)
         death_cons = _turn_end_death_constraints(self._history)
         pd_cons = _protagonist_death_constraints(self._history)
         cult_sets = _cultist_constraints(self._history)
+        lovers_cons = _lovers_pair_constraints(self._history)   # ★B-85
         tt_sets = _tt_declare_constraints(self._history)
         # 友好禁止×友好+の公開テスト：TT確定（正）／TT除外（負）
         tt_confirm, tt_gwban_ex = _tt_gwban_reveals(self._history)
@@ -1389,7 +1876,9 @@ class Belief:
                 combo["rule_xs"], kuro_set, ml_set, board_sets, death_cons,
                 kp_ex, fr_ex, pair_surv, tt_ex, pd_cons, cult_sets, tt_sets,
                 kuro_union_sets=kuro_unions, ml_forced=ml_forced,
-                kp_forced=_kp_forced_here, _memo=_cwm_memo)
+                kp_forced=_kp_forced_here, ml_strict=ml_strict,
+                lovers_cons=lovers_cons, gw_resolved=gw_resolved,
+                _memo=_cwm_memo)
             if w <= 0:
                 continue
             # ★ソフト層（既定オフ＝scale は int 1＝bit-for-bit 不変）。非空時のみ per-combo の
@@ -1534,6 +2023,12 @@ class Belief:
                                      set(e["eligible"])))
             elif e.get("event") == "incident_effect" and e.get("present"):
                 effect_present.append((e.get("day"), set(e["present"])))
+        # ★B-102：効果そのものが犯人を名指しする型（行方不明＝移動した当人／自殺＝死んだ当人／
+        #   殺人事件＝同席の顔ぶれ−死者）。横断表＝_INCIDENT_CULPRIT_INFERENCE。
+        eff_culprit = _incident_effect_culprit_sets(self._history)
+        # ★B-108：効果が実際に盤面に現れた日＝その日の犯人は黒猫ではない（KB: 30 黒猫 特性2）。
+        #   ★一方向のみ＝「効果が出なかった→黒猫」は実装しない（KB: 60 E-7＝他に4原因）。
+        effect_seen_days = _incident_effect_observed_days(self._history)
         cand: dict[int, set[str]] = {}
         for inc in self.incidents:
             day = inc["day"]
@@ -1554,6 +2049,11 @@ class Belief:
             for d, present in effect_present:
                 if d == day:
                     s &= present
+            for d, cs in eff_culprit:      # ★B-102
+                if d == day:
+                    s &= cs
+            if day in effect_seen_days:    # ★B-108
+                s.discard(_KURONEKO)
             cand[day] = s
         for _ in range(len(cand)):
             singles = {next(iter(s)) for s in cand.values() if len(s) == 1}
@@ -1561,6 +2061,78 @@ class Belief:
                 if len(s) > 1:
                     cand[day] = s - singles
         return cand
+
+    def rumor_spent_this_loop(self, loop: int | None = None) -> bool:
+        """★B-113：『不穏な噂』（任意のボード1つに暗躍+1・**1/loop**＝rules/40:61／
+        rules/50:75）が**このループで既に消費された**ことを、公開情報から KB 上
+        証明できるときだけ True を返す。
+
+        用途＝DP-6 の収支式 `defense_plan.unstoppable_supply_gap(rumor_left=...)` への注入
+        （True → rumor_left=0 ＝「現在値1の板」が暗躍禁止で防御可能に戻る帯）。
+
+        ★安全側の設計（B-108 の作法＝**発生の観測だけ**を根拠にする）：
+        - 証明できなければ **False（＝残弾あり扱い＝防御不能側に倒す）**。
+          「残弾なし」と誤確定する方向の誤りは防御を1本失うため絶対に避ける。
+        - イベントの**不在**（噂がまだ見えない等）からは何も結論しない。
+        - belief が矛盾状態（可能世界0）なら棄権＝False。
+
+        証明チャネル（mm能力フェイズの暗躍ソースはクロマクと噂の2つだけ＝legal.py 正典）：
+        (1) このループのボード暗躍イベントで、クロマク由来でありうる供給者候補
+            （present∪大物投射＝`_mm_board_supply_candidates`）の**全員が belief 上
+            P(クロマク)=0**（＝可能世界の完全列挙で0）＝クロマクでは説明不能＝噂で確定。
+            present=[]（盤上に誰も居ないボードへの暗躍）の決定的証拠（AIC検死 seed8・
+            `_public_role_constraints` の既存注記）はこの特殊例として含まれる。
+        (2) このループの**同一 mm能力フェイズに暗躍イベントが2つ以上**＝クロマクは
+            1体まで・1フェイズ1回まで＝少なくとも1つは噂（B-2 `rumor_and_kuromaku` と
+            同じ根拠）。場所を問わず「このループで噂が1発消費された」ことが確定する。
+
+        loop＝現在のループ番号（呼び出し側の view["loop"]）。None なら履歴中の最大 loop
+        （＝最後に観測したループ）を使う。履歴の loop と一致しない値を渡しても
+        該当イベントが無い＝False（健全側）になるだけ。
+        """
+        if loop is None:
+            loops = [e.get("loop") for e in self._history
+                     if e.get("loop") is not None]
+            if not loops:
+                return False
+            loop = max(loops)
+        key = (loop, len(self._history))
+        hit = self._rumor_spent_cache.get(key)
+        if hit is not None:
+            return hit
+        res = self._rumor_spent_proof(loop)
+        self._rumor_spent_cache[key] = res
+        return res
+
+    def _rumor_spent_proof(self, loop: int) -> bool:
+        from engine.board import AREAS
+        if self._total <= 0:
+            return False        # 矛盾状態＝棄権（残弾あり側に倒す）
+        marg = self.role_marginals()
+
+        def _kuro_possible(name: str) -> bool:
+            # role_marginals は cnt>0 の役職しか載せない＝ get()==0.0 は
+            # 「可能世界の完全列挙でクロマク割り当てが1つも無い」ことの厳密判定。
+            return marg.get(name, {}).get("クロマク", 0.0) > 0.0
+
+        anyaku_per_day: Counter = Counter()
+        for e in self._history:
+            if (e.get("phase") != "mastermind_ability"
+                    or e.get("event") != "anyaku"
+                    or e.get("delta", 0) <= 0 or e.get("loop") != loop):
+                continue
+            if e.get("day") is not None:
+                anyaku_per_day[e["day"]] += 1
+            if e.get("target") not in AREAS:
+                continue        # キャラ暗躍＝クロマク由来（噂はボード専用）＝帰属不要
+            present = e.get("present")
+            if present is None:
+                continue        # 旧ログ（present欄なし）＝帰属しない（健全側）
+            cands = _mm_board_supply_candidates(e, self.cast)
+            if not any(_kuro_possible(n) for n in cands):
+                return True     # チャネル(1)：クロマクでは説明不能＝噂で確定
+        # チャネル(2)：同一フェイズに暗躍イベント≥2＝少なくとも1つは噂（B-2）
+        return any(cnt >= 2 for cnt in anyaku_per_day.values())
 
     def summary(self) -> dict:
         role_targets = {}

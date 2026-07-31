@@ -34,8 +34,144 @@ def _tool_build() -> str:
         return ""
 
 
+def utc_saved_at() -> str:
+    """meta の `saved_at` 文字列（UTC・秒精度）を作る。
+
+    ★U-4：ダウンロード名の日時と meta の日時を**同じ値**にするために関数化した
+    （呼び出し側で1回作り、`game_to_jsonl` と `log_file_name` の両方へ渡す）。
+    """
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _ascii_token(s) -> str:
+    """ファイル名に使える ASCII だけ残す（英数字とハイフン）。非ASCIIは捨てる。"""
+    return "".join(ch for ch in str(s) if ch.isascii() and (ch.isalnum() or ch == "-"))
+
+
+def stamp_from_saved_at(saved_at: str | None) -> str:
+    """`saved_at`（"%Y-%m-%d %H:%M:%S UTC"）→ ファイル名用の分単位スタンプ "20260727-1643"。
+
+    未指定・解析不能なら現在時刻（UTC）で作る（欠落させるより一意性を優先）。
+    """
+    from datetime import datetime, timezone
+    if saved_at:
+        try:
+            dt = datetime.strptime(str(saved_at).replace("UTC", "").strip(),
+                                   "%Y-%m-%d %H:%M:%S")
+            return dt.strftime("%Y%m%d-%H%M")
+        except (ValueError, TypeError):
+            pass
+    return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+
+
+def log_file_name(prefix: str, script: Script | None = None, seed=None,
+                  saved_at: str | None = None) -> str:
+    """棋譜ダウンロードのファイル名を作る純関数（Streamlit非依存＝テスト可能。B-51原則）。
+
+    例）`log_file_name("mmv", btx_3日脚本, 0, "2026-07-27 16:43:07 UTC")`
+        → `mmv_20260727-1643_BTX3d_seed0.jsonl`
+
+    ★U-4（2026-07-27）：従来は `mmv_{脚本名}_seed{seed}.jsonl` だったが、**日本語の脚本名は
+      ブラウザ/OSでアンダースコアに潰れる**ため別の対局が同名ファイルになり、取り違えて
+      アップロードする事故が実際に起きた。∴ **ASCIIだけで一意に見分けられる**名前にする＝
+      日時（UTC・分単位）＋セット（FS/BTX）＋1ループの日数＋seed。日時は meta の `saved_at`
+      と同じ値を渡して整合させる。
+    ★読込側はファイル名を一切見ない（中身の meta 行で判定する）＝改名しても復元は壊れない。
+    """
+    parts = [_ascii_token(prefix) or "log", stamp_from_saved_at(saved_at)]
+    if script is not None:
+        set_name = _ascii_token(getattr(script, "set_name", "")) or "SET"
+        try:
+            days = int(getattr(script, "days_per_loop", 0) or 0)
+        except (TypeError, ValueError):
+            days = 0
+        parts.append(f"{set_name}{days}d" if days > 0 else set_name)
+    if seed is not None:
+        try:
+            parts.append(f"seed{int(seed)}")
+        except (TypeError, ValueError):
+            parts.append("seed" + (_ascii_token(seed) or "NA"))
+    return "_".join(parts) + ".jsonl"
+
+
+# ---------------------------------------------------------------------------
+# ★U-8（2026-07-29・ユーザー実戦FB「ログを保存でhtmlが保存される／JSONが保存できない」）
+#
+# 機序（Streamlit 1.4x を実測して特定）：
+#  (1) `st.download_button` は data を **メディアファイル**として登録し、フロントには
+#      `/media/<file_id><拡張子>` のURLを渡す。file_id は **data＋mime＋file_name のハッシュ**。
+#  (2) スクリプト実行が終わるたびに GC（clear_session_refs → remove_orphaned_files）が走り、
+#      **前回のURLの実体は削除される**（DOWNLOADABLE は2パスで削除＝実測で「1回rerunすると
+#      前のrunのURLは404」）。同じ file_id が毎runぶら下がっていれば消えない。
+#  (3) 従来は `saved_at` を毎run `utc_saved_at()` で作っていた＝**秒ごとにdataが変わる**＝
+#      毎run file_id が変わる＝直前に描画したURLが失効する。ダウンロードボタンのクリックは
+#      既定で rerun も起こすので、クリックと失効が競合する。
+#  (4) 失効すると 404（tornadoのHTMLエラーページ）が返る。フロントの `<a download="">` は
+#      **降ってきた中身をそのまま保存**するので、HTMLがファイルとして落ちてくる。
+#      さらに mime が `application/x-ndjson` だと `mimetypes.guess_extension` が None ＝
+#      URLに拡張子が付かない（`/media/<hash>`）ため、ブラウザは Content-Type: text/html から
+#      **拡張子 .html を付けて保存**する＝報告どおりの「htmlが保存されてしまう」。
+#
+# 対処＝(a) 局面が変わらない限り `saved_at` を固定して **dataとファイル名をrun間で不変**にする
+#        （＝file_idが変わらない＝URLが失効しない）＝`stable_saved_at`。
+#      (b) mime は拡張子に写るものを使う（`LOG_DOWNLOAD_MIME`）＝万一失敗しても .html にならない。
+# ---------------------------------------------------------------------------
+
+#: 棋譜ダウンロードに使う MIME。`application/x-ndjson` は拡張子に写らない（上記 (4)）ので使わない。
+LOG_DOWNLOAD_MIME = "application/json"
+
+
+def script_fingerprint(script: Script | None) -> str:
+    """脚本の同一性を表す短いASCII（内容ハッシュ）。**別の対局を同一視しない**ために使う。"""
+    import hashlib
+    if script is None:
+        return "none"
+    try:
+        s = json.dumps(script_to_dict(script), ensure_ascii=False, sort_keys=True)
+    except Exception:  # noqa: BLE001  未知の形でも署名は返す（欠落させない）
+        s = repr(script)
+    return hashlib.md5(s.encode("utf-8")).hexdigest()[:12]
+
+
+def log_position_key(state: GameState, decisions: list[dict] | None) -> tuple:
+    """棋譜ダウンロードの「局面の署名」。**同じ対局の同じ局面なら同じ値**を返す純関数。
+
+    `stable_saved_at` のキーに使う。局面が進めば／別の対局に切り替われば値が変わる＝
+    ファイル名の日時も更新される（U-4の「別の対局・別の局面が同名にならない」を壊さない）。
+    ★脚本の指紋を混ぜる理由＝自作脚本は脚本名も seed も同じ（"自作脚本"/0）ため、これが無いと
+      **別の自作脚本の開幕どうしが同じ署名**になり、前の対局の日時を使い回してしまう。
+    """
+    return (script_fingerprint(getattr(state, "script", None)),
+            int(getattr(state, "loop_no", 0) or 0),
+            int(getattr(state, "day", 0) or 0),
+            len(decisions or []),
+            len(getattr(state, "history", None) or []),
+            str(getattr(state, "winner", "") or ""))
+
+
+def stable_saved_at(store, slot: str, position, now: str | None = None) -> str:
+    """`saved_at` を**局面ごとに1回だけ**決め、以後は同じ値を返す（Streamlit非依存の純関数）。
+
+    store＝`st.session_state` のような dict ライク（get/[]= が使えれば何でもよい）。
+    slot＝ボタン群の識別子（同じ画面の複数ボタンは同じ slot にする＝dataも名前も一致させる）。
+    position＝`log_position_key()` の戻り値。
+
+    これが無いと毎runで `saved_at` が変わり、ダウンロードURLが1回のrerunで失効する（上記機序 (3)）。
+    """
+    key = f"_dl_saved_at_{slot}"
+    sig = repr(tuple(position))
+    cur = store.get(key)
+    if isinstance(cur, (tuple, list)) and len(cur) == 2 and cur[0] == sig:
+        return str(cur[1])
+    val = now or utc_saved_at()
+    store[key] = (sig, val)
+    return val
+
+
 def game_to_jsonl(script: Script, state: GameState, decisions: list[dict],
-                  app_version: str = "", resume_snapshot: dict | None = None) -> str:
+                  app_version: str = "", resume_snapshot: dict | None = None,
+                  saved_at: str | None = None) -> str:
     """1ゲームをJSONL文字列にする（保存・ダウンロード共通）。
 
     app_version＝呼び出し側（app.py/play.py）のアプリ版数（任意）。ログにビルド識別を
@@ -49,14 +185,16 @@ def game_to_jsonl(script: Script, state: GameState, decisions: list[dict],
     から split_day_tail で取れる＝A-36/Phase1 と同じ構造）。過去日の閲覧は既存の `snapshots`
     （phase_snapshots＝表示用）が担う＝役割分担。
     ★省略可＝旧形式（resume_snapshot なし）のログは従来どおり replay で復元する（後方互換）。
+
+    ★U-4：`saved_at` を外から渡せる（省略＝現在時刻）。ダウンロード名（`log_file_name`）と
+    meta の日時を一致させるため、呼び出し側で `utc_saved_at()` を1回作って両方へ渡す。
     """
-    from datetime import datetime, timezone
     meta = {
         "type": "meta",
         "log_format_version": LOG_FORMAT_VERSION,
         "app_version": app_version,
         "tool_build": _tool_build(),
-        "saved_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "saved_at": saved_at or utc_saved_at(),
         "script": script_to_dict(script),
         "winner": state.winner,
         "loops_played": state.loop_no,

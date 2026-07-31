@@ -24,17 +24,32 @@ from agents.debug import ProbedProtagonist
 from agents.heuristic_protagonist import HeuristicProtagonist
 from arena.interactive import PendingHuman, ReplayDesync, play_interactive
 from arena.introspect import belief_snapshot, estimates_from_records, render_mind_md
+from arena import loopcap as _loopcap   # ★分母は実行時参照（テストの差し替えに追随させる）
+from arena.loopcap import BASE_LOOPS, apply_loop_cap, restored_extra_loops, total_loops
+from sim import DAY_OPTIONS, DEFAULT_DAYS
 
 MM_SEAT = {"mastermind"}
 
-# ★4ループ打ち切り（ユーザー/AIC 2026-07-11）の基準ループ数＝ヘッダの分数表示の分母。
-#   「もう少し遊んでやる」で実ループ上限は延びるが、分母はこの基準4で固定＝5周目に入ったら
-#   5/4 と表示する（ユーザー要望 2026-07-12）。
-MMV_BASE_LOOPS = 4
+# ★4ループ打ち切り（ユーザー/AIC 2026-07-11）の基準ループ数。
+#   「もう少し遊んでやる」で総ループ数は BASE_LOOPS+延長回数 に伸びる＝**総ループ数の計算は
+#   arena.loopcap が単一ソース**（U-10・2026-07-30）。ヘッダの分母もそこから出す
+#   （旧：分母を基準4で固定＝5周目で「5/4」。延長が効かないバグ U-10 と相まって
+#    「ループ4/4」なのに終局文が「26ループ以内に」＝表示が矛盾していた）。
+#   ★この名前は後方互換の別名として残すだけ＝**新しい参照は arena.loopcap を使う**
+#   （import 時に値を焼くため、テストが基準を差し替える時に追随しない）。
+MMV_BASE_LOOPS = BASE_LOOPS
+
+
+#: ★B-100（開発モード限定・2026-07-29）：AI主人公の「絶対防御」経路を有効にする実験スイッチ。
+#  既定 False＝現行AIそのまま（安定版と同一挙動）。サイドバーのトグル（開発版のみ表示）が書き換え、
+#  run_to_pending は毎回**最初から再生**するので、切り替えても対局全体が一貫した設定で再現される。
+B100_DEV_MIX = False
 
 
 def _ai_protagonists(seed: int, probed: bool = False) -> dict:
     hp = ProbedProtagonist(seed) if probed else HeuristicProtagonist(seed)
+    if B100_DEV_MIX:
+        hp.B100_MIX = True     # インスタンス属性＝クラス既定（False）は汚さない
     return {"p1": hp, "p2": hp, "p3": hp}
 
 
@@ -53,6 +68,10 @@ def run_to_pending(script, seed: int, choices: list[dict], loops: int = 4,
      「もう少し遊んでやる」で loops を延長できる（呼び出し側が loops を増やす）。
     """
     probe = replace(script, loops=loops)
+    # ★U-10（2026-07-30）：復元経路は `state = initial_state` で走る＝**復元局面が持つ
+    #   script の loops** が上限になり、この関数の loops 引数（＝UIが出した総ループ数）が
+    #   無視されていた（「もう少し遊んでやる」が効かない本丸）。起点の上限をここで揃える。
+    apply_loop_cap(initial_state, loops)
     ai = _ai_protagonists(seed, probed=True)
     hp = ai["p1"]                      # 3席は同一インスタンス＝records は全席分
     used = list(choices)
@@ -139,7 +158,7 @@ def incident_choice_label(state, pending) -> str:
 #   （＝A-32の原因。play.py 側と同型）を構造的に潰す。
 _MMV_GAME_KEYS: tuple[str, ...] = (
     # 対局の同一性
-    "mmv_script", "mmv_script_obj", "mmv_seed", "mmv_choices",
+    "mmv_script", "mmv_script_obj", "mmv_seed", "mmv_days", "mmv_choices",
     "mmv_kifu", "mmv_load_warning", "mmv_ai_replay",
     # 進行に紐づくフラグ・カーソル
     "mmv_extra_loops", "mmv_end_logged", "mmv_revealed", "mmv_choice_len",
@@ -173,10 +192,20 @@ _SCRIPT_ALIASES: dict[str, str] = {
 }
 
 
+# ★B-53b（2026-07-26）：生成脚本の内部キー＝日数セレクタが効く対象（サンプルは日数固定）。
+_GENERATED_KEYS: frozenset[str] = frozenset({
+    "__FS_STANDARD__", "__BTX_STANDARD__",
+    "__FS_BEGINNER__", "__BTX_BEGINNER__", "__FS__", "__BTX__",
+})
+
+
 def script_menu(sample_keys) -> dict:
-    """脚本セレクタの表示ラベル→内部識別子のマップ（#4）。ランダム2種＋初心者2種＋花名。
+    """脚本セレクタの表示ラベル→内部識別子のマップ（#4）。標準2種＋ランダム2種＋初心者2種＋花名。
     未登録キーは花名が無い＝『その他N』で伏せる（生キーを出さない）。Streamlit非依存。"""
     menu: dict[str, str] = {
+        # ★B-53b：⭐ スタンダードを最上段＝selectbox の既定＝一番選びやすい位置（ユーザー要望）。
+        "⭐ スタンダードFS": "__FS_STANDARD__",
+        "⭐ スタンダードBTX": "__BTX_STANDARD__",
         "🔰 メンバー調整FS": "__FS_BEGINNER__",
         "🔰 メンバー調整BTX": "__BTX_BEGINNER__",
         "🎲 ランダムFS": "__FS__", "🎲 ランダムBTX": "__BTX__",
@@ -191,16 +220,25 @@ def script_menu(sample_keys) -> dict:
     return menu
 
 
-def _build_selected_script(key: str, seed: int, random_script, sample_scripts):
-    """内部キー（__FS__/__BTX__/__*_BEGINNER__/サンプル名）から Script を生成。"""
+def _build_selected_script(key: str, seed: int, random_script, sample_scripts,
+                           days: int = DEFAULT_DAYS):
+    """内部キー（__FS__/__BTX__/__*_BEGINNER__/__*_STANDARD__/サンプル名）から Script を生成。
+
+    ★days（1ループの日数・3/4/5/6）は**生成脚本にだけ**効く（サンプルは脚本ごとに固定日数）。
+      既定 3＝従来の呼び出しと完全に同一（B-53b・2026-07-26）。
+    """
+    if key == "__FS_STANDARD__":
+        return random_script("FS", seed, days=days, standard=True)
+    if key == "__BTX_STANDARD__":
+        return random_script("BTX", seed, days=days, standard=True)
     if key == "__FS__":
-        return random_script("FS", seed, days=3)
+        return random_script("FS", seed, days=days)
     if key == "__BTX__":
-        return random_script("BTX", seed, days=3)
+        return random_script("BTX", seed, days=days)
     if key == "__FS_BEGINNER__":
-        return random_script("FS", seed, days=3, beginner=True)
+        return random_script("FS", seed, days=days, beginner=True)
     if key == "__BTX_BEGINNER__":
-        return random_script("BTX", seed, days=3, beginner=True)
+        return random_script("BTX", seed, days=days, beginner=True)
     return sample_scripts[key]()
 
 
@@ -320,9 +358,22 @@ def history_days_md(history: list[dict], *,
         complete = later or has_te or any(
             e.get("event") in ("loop_end", "loop_result", "final_battle") for e in de)
 
+        # ★U-2（2026-07-27・ユーザー実戦FBで再現性のあるバグとして報告）：能力フェイズの
+        #   「発動無し」を**行動解決が済んだか(has_ar)だけ**で出していたため、脚本家能力フェイズで
+        #   人間の入力待ちをしている間に、まだ実行されていない**主人公能力フェイズの「発動無し」**が
+        #   先に表示されていた（後で実際に発動すると表示が変わる＝別のテストプレイで
+        #   「サラリーマンが能力を使わない」という誤ったバグ報告の原因になった）。
+        #   正しい判定＝**そのフェイズより後のフェイズの事象が観測されたか**（＝通過の証拠）。
+        _gw_phase = any(e.get("phase") in ("goodwill_ability", "goodwill_refuse") for e in de)
+        _inc_phase = any(e.get("phase") == "incident" for e in de)
+
         def _r(after):
-            if after in ("脚本家能力フェイズ後", "主人公能力フェイズ後"):
-                return has_ar
+            if after == "脚本家能力フェイズ後":
+                # 主人公能力/事件/ターン終了のいずれかが観測されていれば通過済み。
+                return has_ar and (_gw_phase or _inc_phase or has_te or complete)
+            if after == "主人公能力フェイズ後":
+                # 主人公能力フェイズの後は事件フェイズ＝事件かターン終了の観測で通過を判定。
+                return has_ar and (_inc_phase or has_te or complete)
             if after == "ターン終了フェイズ後":
                 return has_te or (complete and not early_end)
             return True
@@ -357,21 +408,49 @@ def history_md(history: list[dict], max_events: int = 40, *,
     return "\n".join(out).strip("\n")
 
 
-def _render_history_folded(history: list[dict]) -> None:
+def new_event_days(history: list[dict], seen_len: int | None) -> set:
+    """`history[seen_len:]`（＝🆕が付く新着イベント）が属する (loop, day) の集合を返す。
+
+    ★U-5（2026-07-29）：畳んだ日の中に新着が埋もれると「🆕が見えない」＝畳みの副作用になる。
+    畳み判断の側でこの集合を「開く日」に足すために使う。日が None のイベント（loop_result 等）は
+    **直前に観測した (loop, day) にぶら下げる**（history_days_md の日付け方と同じ扱い）。
+    Streamlit非依存＝テスト可能。seen_len が None／範囲外なら空集合（新着なし）。
+    """
+    if not history or seen_len is None or seen_len >= len(history):
+        return set()
+    out: set = set()
+    last: tuple | None = None
+    for i, e in enumerate(history):
+        if e.get("day") is not None:
+            last = (e.get("loop"), e.get("day"))
+        if i >= seen_len and last is not None:
+            out.add(last)
+    return out
+
+
+def _render_history_folded(history: list[dict], *, seen_len: int | None = None,
+                           header: str = "**📢 経過（公開情報）**") -> None:
     """★A-2：経過（公開情報）を日毎 expander で畳む（主人公プレイ play.py と統一）。
-    過去ループ→1つの expander にまとめ、現ループ→最新日は開き・それ以前の日は畳む。"""
+    過去ループ→1つの expander にまとめ、現ループ→最新日は開き・それ以前の日は畳む。
+
+    ★U-5（2026-07-29・ユーザー実戦FB「行動フェイズのときに経過の情報が全て展開されるのが不便。
+    最新情報以外は他のフェイズの時と同様に畳んでおいてほしい」）：フェイズ見返し中だけ平置きの
+    `history_md` を使っていた＝全ループ・全日が展開されていた。seen_len を受けて同じ畳みに統一する。
+    新着（🆕）を含む日は畳むと見えなくなるので**開いた状態にする**。"""
     import streamlit as st
-    st.markdown("**📢 経過（公開情報）**")
-    parts = history_days_md(history)
+    st.markdown(header)
+    parts = history_days_md(history, seen_len=seen_len)
     if not parts:
         st.markdown("_まだ記録がありません。_")
         return
+    fresh = new_event_days(history, seen_len)
     cur_loop = parts[-1][0]
     prev = [(lp, dy, b) for lp, dy, b in parts if (lp or 0) < (cur_loop or 0)]
     curr = [(lp, dy, b) for lp, dy, b in parts if (lp or 0) == (cur_loop or 0)]
     if prev:
         n_loops = len({lp for lp, _dy, _b in prev})
-        with st.expander(f"過去のループ（{n_loops}ループ分）", expanded=False):
+        _open = any((lp, dy) in fresh for lp, dy, _b in prev)   # 新着がある過去ループは開く
+        with st.expander(f"過去のループ（{n_loops}ループ分）", expanded=_open):
             for lp, dy, b in prev:
                 st.markdown(f"**── L{lp}・{dy}日目 ──**")
                 st.markdown(b, unsafe_allow_html=True)
@@ -379,6 +458,9 @@ def _render_history_folded(history: list[dict]) -> None:
         if i == len(curr) - 1:   # 最新日は開いて見せる
             st.markdown(f"**🗓 L{lp}・{dy}日目 の経過**")
             st.markdown(b, unsafe_allow_html=True)
+        elif (lp, dy) in fresh:  # 新着🆕を含む日は畳まない
+            with st.expander(f"L{lp}・{dy}日目", expanded=True):
+                st.markdown(b, unsafe_allow_html=True)
         else:                    # 現ループの過去日は畳む
             with st.expander(f"L{lp}・{dy}日目", expanded=False):
                 st.markdown(b, unsafe_allow_html=True)
@@ -436,12 +518,19 @@ def rules_reference_md(set_name: str, active_rules: set | None = None) -> str:
     return "\n".join(lines)
 
 
-def encode_mmv_save(pick: str, seed: int, choices: list[dict]) -> str:
-    """一人回し(脚本家)の局面を再現4点（脚本名・seed・choices）でJSON文字列化（#8）。
-    AI種別は現状HeuristicProtagonist固定＝seedと脚本で完全再現できる。"""
+def encode_mmv_save(pick: str, seed: int, choices: list[dict],
+                    days: int = DEFAULT_DAYS) -> str:
+    """一人回し(脚本家)の局面を再現4点（脚本名・seed・choices・日数）でJSON文字列化（#8）。
+    AI種別は現状HeuristicProtagonist固定＝seedと脚本で完全再現できる。
+
+    ★B-53b：`days` は**既定(3日)なら書かない**＝旧セーブ／旧URLと同じペイロード（後方互換：
+      読む側は欠落を3として扱う＝`decode_mmv_save` の呼び出し元）。
+    """
     import json
-    return json.dumps({"v": 1, "pick": pick, "seed": int(seed),
-                       "choices": choices}, ensure_ascii=False)
+    d: dict = {"v": 1, "pick": pick, "seed": int(seed), "choices": choices}
+    if int(days) != DEFAULT_DAYS:
+        d["days"] = int(days)
+    return json.dumps(d, ensure_ascii=False)
 
 
 def decode_mmv_save(blob: str) -> dict | None:
@@ -457,11 +546,12 @@ def decode_mmv_save(blob: str) -> dict | None:
         return None
 
 
-def encode_mmv_url(pick: str, seed: int, choices: list[dict]) -> str:
+def encode_mmv_url(pick: str, seed: int, choices: list[dict],
+                   days: int = DEFAULT_DAYS) -> str:
     """局面を URL ?g= 用の圧縮base64にする（#6・リロード/タブ復元で局面維持）。"""
     import base64
     import zlib
-    raw = encode_mmv_save(pick, seed, choices).encode("utf-8")
+    raw = encode_mmv_save(pick, seed, choices, days).encode("utf-8")
     return base64.urlsafe_b64encode(zlib.compress(raw, 9)).decode("ascii")
 
 
@@ -959,7 +1049,13 @@ def _render_used_cards_inline(st, state) -> None:
         st.caption(f"（消費カード表示に失敗：{e}）")
 
 
-def render_play_vs_ai(mobile: bool = False) -> None:
+def render_play_vs_ai(mobile: bool = False, stable: bool = False) -> None:
+    """脚本家プレイ（人間＝脚本家／AI＝主人公）のページ本体。
+
+    stable=True（安定版＝`APP_CHANNEL=stable`）では開発用の表示を出さない
+    ＝`arena/play.py:render_play(stable=...)` と同じ流儀。既定 False＝開発版扱い＝安全側。
+    ★B-100 の緑枠（AI主人公の札のうち「絶対防御」で決まったもの）は開発モードのみ。
+    """
     import streamlit as st
 
     import cloud   # Supabase（未設定でno-op・失敗握りつぶし・UIを壊さない）
@@ -1009,8 +1105,9 @@ def render_play_vs_ai(mobile: bool = False) -> None:
                             mmv_snap_state=_ms0.to_snapshot(),
                             mmv_snap_ai_replay=(_mai or None),
                             mmv_choices=list(_mhc), mmv_kifu=True,
-                            mmv_extra_loops=max(
-                                0, int(getattr(_ms0, "loop_no", 1)) - MMV_BASE_LOOPS),   # A-31
+                            # ★A-31／U-10：延長ループの復元は loopcap が単一ソース
+                            #   （保存時に効いていた総ループ数＝script.loops から復元する）。
+                            mmv_extra_loops=restored_extra_loops(_ms0),
                             mmv_snap_warn=_mnorm, mmv_load_warning=_compat)
                     else:
                         # ★旧形式ログ＝従来どおり replay＋「ずれる場合あり」を維持（後方互換）。
@@ -1024,7 +1121,10 @@ def render_play_vs_ai(mobile: bool = False) -> None:
                             mmv_load_warning=_compat)
                 except Exception:  # noqa: BLE001  壊れた棋譜は無視
                     return False
-                st.session_state["mmv_extra_loops"] = 0
+                # ★U-10：ここに在った `mmv_extra_loops = 0` は撤去。上の snapshot 復元で
+                #   復元した延長ループ数を**直後に握り潰していた**（総ループ数が loop_no を
+                #   下回り、復元直後に即終局しうる）。旧形式ログ側は _reset_mmv_game が
+                #   キーごと消す＝既定0＝挙動そのまま。
                 for _k in ("mmv_revealed", "mmv_choice_len"):
                     st.session_state.pop(_k, None)
                 return True
@@ -1032,15 +1132,16 @@ def render_play_vs_ai(mobile: bool = False) -> None:
         d = decode_mmv_save(text)
         if not (d and d.get("pick") in menu):
             return False
+        _days = int(d.get("days", DEFAULT_DAYS))   # ★B-53b（欠落＝3日＝旧セーブとの後方互換）
         try:
             _sc_obj = _build_selected_script(
-                menu[d["pick"]], int(d.get("seed", 0)), random_script, SAMPLE_SCRIPTS)
+                menu[d["pick"]], int(d.get("seed", 0)), random_script, SAMPLE_SCRIPTS, _days)
         except Exception:  # noqa: BLE001  壊れた/未知の脚本は無視
             return False
         # ★A-32：入口は _reset_mmv_game を通す（対局キーの全消し＋必要分の設定）。カーソル
         #   （mmv_revealed/mmv_choice_len）も _MMV_GAME_KEYS に入っている＝個別に消さない。
         _reset_mmv_game(mmv_script_obj=_sc_obj, mmv_script=d["pick"],
-                        mmv_seed=int(d.get("seed", 0)),
+                        mmv_seed=int(d.get("seed", 0)), mmv_days=_days,
                         mmv_choices=list(d.get("choices", [])), mmv_extra_loops=0)
         return True
 
@@ -1068,7 +1169,12 @@ def render_play_vs_ai(mobile: bool = False) -> None:
         # ★A-39（2026-07-19）：「☁️ 共有コードで読み込む」は撤去（発行側も同時撤去）。共有コードは
         #   棋譜payload＝replay 復元でドリフトする一方、下の☁トークン（snapshot）が同じ用途を
         #   replay非依存で満たす＝保存方式を2本（☁トークン＋📼ログ）に集約した。
-
+        # ★U-9（2026-07-29・実害の出たバグ）：A-39 で「☁️ 共有コードで読み込む」を撤去した際、
+        #   それを包んでいた `if cloud.enabled():` の行だけが一緒に消え、**下の復帰トークン欄が
+        #   直前の `if up is not None:` の中に吸収されていた**＝ファイルをアップロードするまで
+        #   復帰トークンの入力欄が出ない＝「退避はできたのに戻せない」状態だった。
+        #   主人公プレイ（play.py）側は `if _cloud.enabled():` が残っており正常＝そちらに揃える。
+        if cloud.enabled():
             # ★Supabase Phase 1：復帰トークンから「続き」を復元（スナップショット＝replay非依存）。
             _tok = st.text_input("☁ 続きを復元（復帰トークン）", key="mmv_snap_tok_in",
                                  placeholder="復帰トークンを貼り付け",
@@ -1102,33 +1208,55 @@ def render_play_vs_ai(mobile: bool = False) -> None:
                         mmv_script_obj=_st0.script, mmv_kifu=True,   # ?g= 保存を止める（既存機構）
                         # ★A-31 根治：mmv_script/mmv_seed が無いと rerun 後に設定画面へ落ちる。
                         mmv_script="クラウド（続き）", mmv_seed=0,
-                        # ★A-31：延長ループの復元（総ループが loop_no を下回ると即終局する）。
-                        mmv_extra_loops=max(0, int(getattr(_st0, "loop_no", 1)) - MMV_BASE_LOOPS),
+                        # ★A-31／U-10：延長ループの復元（総ループが loop_no を下回ると即終局
+                        #   する）＝計算は loopcap が単一ソース。
+                        mmv_extra_loops=restored_extra_loops(_st0),
                         mmv_snap_warn="／".join(x for x in (_why, _norm) if x))
                     cloud.log_event("cloud_snapshot_load", side="mastermind", ok=True)
                     st.rerun()
 
         # ★自作脚本のプレイ投入口（§2b・2026-07-13）：script_studio/脚本ビルダーで組んだ脚本JSONを
         #   開始脚本として読み込む（ランダム生成でなく自作脚本と対戦）。
-        with st.expander("✍️ 自作脚本で始める（script_studio/脚本ビルダーの『プレイ用JSON』を貼付）"):
-            _cj = st.text_area("脚本JSON を貼り付け", key="mmv_custom_json", height=120,
-                               placeholder='{"set_name": "First Steps", "rule_y": "...", ...}')
-            st.caption("⚠ 自作脚本の対局は **URL自動保存の対象外**です（リロード/ブラウザ復元で消えます）。"
-                       "続きを残すには『📼 ログを保存(.jsonl=棋譜)』の**ダウンロード**をご利用ください"
-                       "（棋譜.jsonl は脚本を内包＝そのまま読み込めば復帰できます）。")
-            if st.button("この脚本で始める", key="mmv_custom_start"):
-                from arena.play import _script_from_json   # 遅延import（play↔play_vs_ai 循環回避）
-                _sc, _err = _script_from_json(_cj or "")
-                if _sc is None:
-                    st.error(_err)
-                else:
-                    # ★A-32：入口は _reset_mmv_game を通す（個別列挙をやめる＝登録漏れを防ぐ）。
-                    _reset_mmv_game(mmv_script_obj=_sc,          # 確定脚本を直接使う
-                                    mmv_script="自作脚本", mmv_seed=0,
-                                    mmv_choices=[], mmv_extra_loops=0)
-                    cloud.log_event("play_start", side="mastermind", source="custom")
-                    st.success("自作脚本を読み込みました。")
+        # ★U-7（2026-07-29・ユーザー要望）：**貼付欄（text_area）と畳み（expander）を撤去**する。
+        #   U-6でファイル読み込み（D&D可）を入れた時点で貼付欄は不要になった＝投入口はファイル1本。
+        #   ★内部の受け渡しは session_state のまま（キー "mmv_custom_json"）＝検証・開始の経路は
+        #   U-6 と同じ1本。畳み撤去＝常時展開（主人公プレイ play.py と作法を揃える）。
+        st.markdown("**✍️ 自作脚本で始める**（script_studio/脚本ビルダーの『プレイ用JSON』）")
+        _up = st.file_uploader(
+            "📂 脚本JSONファイルを読み込む（.json）", type=["json"],
+            key="mmv_custom_file",
+            help="script_studio/脚本ビルダーの『🎮 プレイ用JSON』を保存したファイルを"
+                 "選ぶ（ドラッグ&ドロップ可）。")
+        if _up is not None:
+            import hashlib
+            _raw = _up.getvalue()
+            _sig = hashlib.md5(_raw).hexdigest()
+            if st.session_state.get("_mmv_custom_sig") != _sig:   # 再読込ループ防止
+                st.session_state["_mmv_custom_sig"] = _sig
+                try:
+                    st.session_state["mmv_custom_json"] = _raw.decode("utf-8")
                     st.rerun()
+                except UnicodeDecodeError:
+                    st.error("UTF-8のJSONファイルを選んでください。")
+        _cj = st.session_state.get("mmv_custom_json") or ""
+        if _cj.strip():   # 貼付欄が無くなった分、読み込み済みかどうかは文字数で示す
+            st.caption(f"✅ 脚本JSONを読み込み済み（{len(_cj)}文字）。")
+        st.caption("⚠ 自作脚本の対局は **URL自動保存の対象外**です（リロード/ブラウザ復元で消えます）。"
+                   "続きを残すには『📼 ログを保存(.jsonl=棋譜)』の**ダウンロード**をご利用ください"
+                   "（棋譜.jsonl は脚本を内包＝そのまま読み込めば復帰できます）。")
+        if st.button("この脚本で始める", key="mmv_custom_start"):
+            from arena.play import _script_from_json   # 遅延import（play↔play_vs_ai 循環回避）
+            _sc, _err = _script_from_json(_cj)
+            if _sc is None:
+                st.error(_err)
+            else:
+                # ★A-32：入口は _reset_mmv_game を通す（個別列挙をやめる＝登録漏れを防ぐ）。
+                _reset_mmv_game(mmv_script_obj=_sc,          # 確定脚本を直接使う
+                                mmv_script="自作脚本", mmv_seed=0,
+                                mmv_choices=[], mmv_extra_loops=0)
+                cloud.log_event("play_start", side="mastermind", source="custom")
+                st.success("自作脚本を読み込みました。")
+                st.rerun()
 
     # -- #6 URL からの局面復元：リロード/タブ復元でも局面が戻る --
     #    ★Phase 2（2026-07-17）：**?s=（オートセーブのトークン）を優先**＝snapshot方式＝replay
@@ -1157,8 +1285,7 @@ def render_play_vs_ai(mobile: bool = False) -> None:
                         mmv_snap_state=_s0.to_snapshot(), mmv_snap_ai_replay=(_ai0 or None),
                         mmv_choices=list(_hc0), mmv_script_obj=_s0.script,  # 脚本はsnapshot内蔵
                         mmv_script="クラウド（続き）", mmv_seed=0,
-                        mmv_extra_loops=max(                          # 延長ループの復元（A-31）
-                            0, int(getattr(_s0, "loop_no", 1)) - MMV_BASE_LOOPS),
+                        mmv_extra_loops=restored_extra_loops(_s0),    # 延長ループの復元（A-31/U-10）
                         mmv_kifu=True,                                # ?g= の再生成を止める
                         mmv_snap_warn="／".join(x for x in (_why0, _norm0) if x))
                     st.session_state["mmv_auto_token"] = _tok0        # 以後も同じ行へ上書き（消さない）
@@ -1170,11 +1297,12 @@ def render_play_vs_ai(mobile: bool = False) -> None:
         d = decode_mmv_url(blob) if blob else None
         if d and d.get("pick") in menu:
             try:
+                _d0 = int(d.get("days", DEFAULT_DAYS))   # ★B-53b（欠落＝3日＝旧URLとの後方互換）
                 rsc = _build_selected_script(menu[d["pick"]], int(d.get("seed", 0)),
-                                             random_script, SAMPLE_SCRIPTS)
+                                             random_script, SAMPLE_SCRIPTS, _d0)
                 # ★A-32：URL(?g=)復元も入口＝_reset_mmv_game を通す。
                 _reset_mmv_game(mmv_script_obj=rsc, mmv_script=d["pick"],
-                                mmv_seed=int(d.get("seed", 0)),
+                                mmv_seed=int(d.get("seed", 0)), mmv_days=_d0,
                                 mmv_choices=list(d.get("choices", [])))
             except Exception:  # noqa: BLE001  壊れたURLは新規扱い
                 pass
@@ -1188,6 +1316,20 @@ def render_play_vs_ai(mobile: bool = False) -> None:
                 help="花の名前のシナリオはLLMが適当に作ったもの、"
                      "それ以外はランダムに機械的に生成したものです。")
             seed = int(st.number_input("seed", 0, 9999, 0, key="mmv_seed_in"))
+            # ★B-53b：1ループの日数（3/4/5/6・既定3）。⭐/🔰/🎲 の生成脚本にだけ効く。
+            _gen = menu.get(label) in _GENERATED_KEYS
+            days = int(st.selectbox(
+                "1ループの日数", DAY_OPTIONS, index=DAY_OPTIONS.index(DEFAULT_DAYS),
+                key="mmv_days_in", disabled=not _gen,
+                help="⭐/🔰/🎲 の自動生成脚本の日数です（花の名前のサンプルは脚本ごとに固定）。"
+                     "日数が増えるほど脚本家（あなた）に有利＝主人公AIには難しくなります。"))
+            if not _gen:
+                days = DEFAULT_DAYS
+            elif days >= 4:
+                st.caption(f"⏳ {days}日の脚本は生成に数秒〜十数秒かかることがあります。")
+            if menu.get(label, "").endswith("_STANDARD__"):
+                st.caption("⭐ スタンダードメンバー：定番キャラ14人だけの脚本です"
+                           "（特殊な特性・変則キャラは出ません）。")
             start = st.button("この設定で開始", type="primary",
                               use_container_width=True)
             # ★β-FB（2026-07-24・ユーザー指示）：既定OFF（初見に情報過多＝わかりにくい。
@@ -1200,14 +1342,17 @@ def render_play_vs_ai(mobile: bool = False) -> None:
         if start:
             # ★A-32：対局キーは _reset_mmv_game が一括で消してから設定する（個別列挙をやめる＝
             #   新機構を足した時の登録漏れを防ぐ。登録先は _MMV_GAME_KEYS 一箇所）。
+            with st.spinner(f"脚本を準備中…（1ループ{days}日）"):   # ★B-53b：4日以上は数秒〜
+                _new_sc = _build_selected_script(menu[label], seed,
+                                                 random_script, SAMPLE_SCRIPTS, days)
             _reset_mmv_game(
-                mmv_script_obj=_build_selected_script(menu[label], seed,
-                                                      random_script, SAMPLE_SCRIPTS),
+                mmv_script_obj=_new_sc,
                 mmv_script=label,        # 表示名（花名）で保持＝以降もマスク
-                mmv_seed=seed, mmv_choices=[], mmv_extra_loops=0)
+                mmv_seed=seed, mmv_days=days, mmv_choices=[], mmv_extra_loops=0)
             cloud.log_event("play_start", side="mastermind", source="new")
             st.rerun()
         st.info("👈 サイドバーで脚本と seed を選び「この設定で開始」を押してください。"
+                "⭐スタンダードは定番キャラ14人だけ、"
                 "🔰メンバー調整は、複雑な能力・特性のキャラが出にくくなります。")
         return
 
@@ -1218,22 +1363,44 @@ def render_play_vs_ai(mobile: bool = False) -> None:
     # -- 対局中サイドバー：脚本の再選択（ユーザー要望 2026-07-10） --
     with st.sidebar:
         st.markdown("### 🎭 脚本家プレイ")
-        st.caption(f"現在：{st.session_state['mmv_script']}（seed {seed}）")
+        st.caption(f"現在：{st.session_state['mmv_script']}（seed {seed}・"
+                   f"1ループ{sc.days_per_loop}日）")
         relabel = st.selectbox(
             "別の脚本を選ぶ", labels, key="mmv_repick",
             help="花の名前のシナリオはLLMが適当に作ったもの、"
                  "それ以外はランダムに機械的に生成したものです。")
         reseed = int(st.number_input("seed", 0, 9999, seed, key="mmv_reseed"))
+        # ★B-53b：日数も選び直せる（生成脚本のみ・既定は現在の対局の日数）。
+        _regen = menu.get(relabel) in _GENERATED_KEYS
+        _cur_days = int(st.session_state.get("mmv_days", DEFAULT_DAYS))
+        redays = int(st.selectbox(
+            "1ループの日数", DAY_OPTIONS,
+            index=DAY_OPTIONS.index(_cur_days) if _cur_days in DAY_OPTIONS else 0,
+            key="mmv_redays", disabled=not _regen,
+            help="⭐/🔰/🎲 の自動生成脚本の日数です（花の名前のサンプルは脚本ごとに固定）。"))
+        if not _regen:
+            redays = DEFAULT_DAYS
         if st.button("🔄 この設定で最初から", use_container_width=True):
             # ★A-32：同上（一括で消してから設定＝登録先は _MMV_GAME_KEYS 一箇所）。
+            with st.spinner(f"脚本を準備中…（1ループ{redays}日）"):
+                _re_sc = _build_selected_script(menu[relabel], reseed,
+                                                random_script, SAMPLE_SCRIPTS, redays)
             _reset_mmv_game(
-                mmv_script_obj=_build_selected_script(menu[relabel], reseed,
-                                                      random_script, SAMPLE_SCRIPTS),
-                mmv_script=relabel, mmv_seed=reseed, mmv_choices=[], mmv_extra_loops=0)
+                mmv_script_obj=_re_sc, mmv_script=relabel, mmv_seed=reseed,
+                mmv_days=redays, mmv_choices=[], mmv_extra_loops=0)
             cloud.log_event("play_start", side="mastermind", source="restart")
             st.rerun()
         st.toggle("🧠 主人公AIの思考表示", key="mmv_show_mind", value=False,
                   help="ONで、対局中に主人公AIの推理（内省パネル）を下部に表示します。")
+        if not stable:
+            # ★B-100（開発モード限定）：主人公AIの「絶対防御」経路を有効にする実験スイッチ。
+            #   ONにすると、その経路で決まった札が『⏪解決フェイズを見返す』盤面で**緑枠**になる。
+            #   OFF（既定）＝現行AIそのまま＝安定版と同一挙動。
+            global B100_DEV_MIX
+            B100_DEV_MIX = st.toggle(
+                "🟩 B-100 絶対防御（開発用）", key="mmv_b100", value=False,
+                help="実験中の混合AI。ONの間、AI主人公は『確度の高い負け筋』を必ず1席で"
+                     "覆います。その札は見返し盤面で緑枠になります（開発版のみ）。")
         st.divider()
         _render_load_widget()   # 📂 対局を読み込む（.rooper.json）＝別の保存局面へ切替
 
@@ -1245,7 +1412,9 @@ def render_play_vs_ai(mobile: bool = False) -> None:
         if st.session_state.get("mmv_kifu"):
             _qp_set("g", None)
         else:
-            _qp_set("g", encode_mmv_url(st.session_state["mmv_script"], seed, choices))
+            _qp_set("g", encode_mmv_url(
+                st.session_state["mmv_script"], seed, choices,
+                int(st.session_state.get("mmv_days", DEFAULT_DAYS))))   # ★B-53b
     except Exception:  # noqa: BLE001  URL書き込み失敗は無害（ファイルセーブが代替）
         pass
 
@@ -1254,7 +1423,9 @@ def render_play_vs_ai(mobile: bool = False) -> None:
         st.warning("⚠ " + str(st.session_state["mmv_load_warning"]))
 
     # ★4ループ打ち切り（ユーザー/AIC 2026-07-11）：既定4ループ。「もう少し遊んでやる」で延長。
-    _mmv_loops = MMV_BASE_LOOPS + int(st.session_state.get("mmv_extra_loops", 0))
+    #   ★U-10：総ループ数は loopcap.total_loops が単一ソース＝実行の上限・ヘッダの分母・
+    #   終局バナーの説明文が**必ず同じ数**になる（3か所で別々に足していたのを一本化）。
+    _mmv_loops = total_loops(st.session_state.get("mmv_extra_loops", 0))
     # ★Supabase Phase 1：クラウド復元中は日境界snapshotが起点（§1 rev2・§8b裁定2）。
     # ★A-36 根治（2026-07-19）：mmv_snap_state は **snapshot(dict)** で保持し、毎rerun ここで
     #   from_snapshot して新品 state を起点にする（主人公プレイ play.py と同じ・復元の累積を根絶）。
@@ -1339,8 +1510,15 @@ def render_play_vs_ai(mobile: bool = False) -> None:
         _disp_loop, _disp_day = _hs["loop"], _hs["day"]
     else:
         _disp_loop, _disp_day = state.loop_no, state.day
+    # ★U-10（2026-07-30・ユーザー裁定「分母は4固定でいいよ」）：**分母は基準ループ数に固定**
+    #   （2026-07-12 のユーザー要望を維持）。延長中は `5/4` のように分子が分母を超える表示になるが、
+    #   それが「延長している」ことの表現＝仕様どおり。
+    #   ★ユーザーが見た矛盾（`4/4` なのに終局文が「26ループ以内に」）の原因は**この表示ではなく、
+    #   復元経路で延長が実際に効いていなかったこと**（`arena/interactive` が復元局面の
+    #   `script.loops` を上限にしていた＝押した22回が全て捨てられ、表示だけ累積していた）。
+    #   そちらは `arena/loopcap.py` の単一ソース化で解消済み。∴ 表示は旧仕様のままでよい。
     st.markdown(f"**脚本** {st.session_state['mmv_script']}（seed {seed}）　"
-                f"**ループ** {_disp_loop}/{MMV_BASE_LOOPS}　"
+                f"**ループ** {_disp_loop}/{_loopcap.BASE_LOOPS}　"
                 f"**日** {_disp_day}/{sc.days_per_loop}　"
                 f"**あなたの手数** {len(choices)}")
 
@@ -1350,7 +1528,9 @@ def render_play_vs_ai(mobile: bool = False) -> None:
     #   📼ログが日境界snapshotを内包＝上位互換）。📂の読込は当面残す（段階廃止・既存ファイル救済）。
     _sv2 = st.container()
     try:
-        from arena.gamelog import game_to_jsonl
+        from arena.gamelog import (
+            LOG_DOWNLOAD_MIME, game_to_jsonl, log_file_name, log_position_key,
+            stable_saved_at)
         # ★A-39：ログに「最新の日境界スナップショット」を同梱＝📂読込を replay でなく snapshot
         #   復元でできるようにする（当日分は decisions から split_day_tail）。day_snaps は
         #   run_to_pending の on_day_start が集めた完全スナップショット（A-36/B-30③ 資産）。
@@ -1358,14 +1538,27 @@ def render_play_vs_ai(mobile: bool = False) -> None:
         _mrs_snaps = getattr(state, "day_snaps", {}) or {}
         _mrs = ({"loop": _mrs_key[0], "day": _mrs_key[1], "snapshot": _mrs_snaps[_mrs_key]}
                 if _mrs_snaps.get(_mrs_key) else None)
+        # ★U-4（2026-07-27）：ファイル名から日本語の脚本名を外し、日時（UTC・分単位）＋セット＋
+        #   日数＋seed のASCIIだけにする（日本語名はブラウザ/OSで潰れて別対局と同名になり、
+        #   取り違えてアップロードする事故が起きた）。meta の saved_at と同じ値を使う。
+        # ★U-8（2026-07-29・ユーザー実戦FB）：ここが「htmlが保存される／JSONが保存できない」の本体。
+        #   (a) `utc_saved_at()` を毎run呼ぶと秒ごとにdataが変わり、Streamlit のメディアURLが
+        #       1回のrerunで失効する（→404のHTMLエラーページがそのまま保存される）。
+        #   (b) mime が `application/x-ndjson` だとURLに拡張子が付かず、失効時にブラウザが
+        #       Content-Type: text/html から **.html** を付けて保存する＝報告どおりの症状。
+        #   機序の詳細＝arena/gamelog.py の U-8 コメント。
+        _sa = stable_saved_at(st.session_state, "mmv", log_position_key(state, _log))
         _sv2.download_button(
             "📼 ログを保存（ビューア用）",
-            data=game_to_jsonl(sc, state, _log, resume_snapshot=_mrs),
-            file_name=f'mmv_{st.session_state["mmv_script"]}_seed{seed}.jsonl',
-            mime="application/x-ndjson", key="mmv_savelog_top",
+            data=game_to_jsonl(sc, state, _log, resume_snapshot=_mrs, saved_at=_sa),
+            file_name=log_file_name("mmv", sc, seed, saved_at=_sa),
+            mime=LOG_DOWNLOAD_MIME, key="mmv_savelog_top",
             help="『🔁 リプレイビューア』で開くと日単位で振り返れます。")
-    except Exception:
-        pass
+    except Exception as _e:   # noqa: BLE001
+        # ★U-8：従来は `pass`＝失敗するとボタンごと黙って消えた（＝「保存できない」の一因で、
+        #   原因も残らない）。fail-ignore の作法どおり**理由を出して**気づけるようにする。
+        _sv2.warning(f"📼 ログを保存できませんでした（{type(_e).__name__}: {_e}）。"
+                     "☁ 復帰トークンでの退避をお使いください。")
 
     # ★A-39：「☁️ クラウドに保存（共有コード発行）」は撤去（読込側も同時撤去）＝保存は
     #   ☁トークン（snapshot・下記）＋📼ログの2本に集約。
@@ -1427,7 +1620,8 @@ def render_play_vs_ai(mobile: bool = False) -> None:
         st.markdown(f'<div style="font-size:1.4em;font-weight:700;margin:0.2em 0">'
                     f'🕐 L{_s["loop"]}・{_s["day"]}日目｜{_s["point"]}</div>',
                     unsafe_allow_html=True)
-        _bh = board_html_from_json(mm_snapshot_json(_s), popup=True)  # A-34：ログ閲覧盤面
+        # A-34：ログ閲覧盤面／★B-100：dev=True（開発モード）でAI主人公の絶対防御札を緑枠に
+        _bh = board_html_from_json(mm_snapshot_json(_s), popup=True, dev=not stable)
         if _bh:  # ★st.markdown＝Streamlitのテーマを継承（ダークで白文字）。
             st.markdown(_territory_note(sc) + _bh, unsafe_allow_html=True)
         st.caption(f"⏩ 解決したフェイズを確認中（{revealed + 1}/{n_snaps}）。"
@@ -1444,10 +1638,11 @@ def render_play_vs_ai(mobile: bool = False) -> None:
             {"mmv_revealed": n_snaps}))
         # レビュー中の経過＝今見ている盤面の時点まで（先読みさせない）。
         #   ★このフェイズ送りで新たに現れた公開情報だけ赤下線🆕（1つ前のスナップショット以降）。
-        st.markdown("**📢 経過（公開情報・この時点まで）**")   # B6：主人公プレイと統一
+        #   ★U-5（2026-07-29）：ここだけ平置き（history_md）だったため全ループ・全日が展開され
+        #     ていた＝決定フェイズ側と同じ日毎の畳み（_render_history_folded）に統一する。
         _seen = snaps[revealed - 1].get("hist_len", 0) if revealed > 0 else 0
-        st.markdown(history_md(state.history[:_s.get("hist_len", 0)], seen_len=_seen),
-                    unsafe_allow_html=True)
+        _render_history_folded(state.history[:_s.get("hist_len", 0)], seen_len=_seen,
+                               header="**📢 経過（公開情報・この時点まで）**")
     elif pending is not None:
         # B4：現局面の盤面にも時点ヘッダを出す（主人公プレイと同じ「🕐 ▶ L・D｜フェイズ」）。
         st.markdown(f'<div style="font-size:1.4em;font-weight:700;margin:0.2em 0">'
@@ -1578,7 +1773,7 @@ def render_play_vs_ai(mobile: bool = False) -> None:
         from arena.endscreen import go_home, render_outcome_banner
         won = state.winner
         _mm_won = won == "mastermind"   # 脚本家（人間）が勝ったか
-        _nloops = MMV_BASE_LOOPS + int(st.session_state.get("mmv_extra_loops", 0))
+        _nloops = _mmv_loops            # ★U-10：ヘッダの分母と同じ値（単一ソース）
         if not st.session_state.get("mmv_end_logged"):   # 終局イベントは1対局1回だけ
             cloud.log_event("play_end", side="mastermind", won=_mm_won,
                             loops=_nloops, set=sc.set_name, days=sc.days_per_loop)

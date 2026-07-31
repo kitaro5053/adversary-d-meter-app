@@ -89,13 +89,16 @@ _STYLE = '''
 '''
 
 
-def _hero_html() -> str:
-    return '''
-<div class="hb-wrap">
+def _hero_html(with_title: bool = True) -> str:
+    """トップの見出しHTML。with_title=False＝画像バナー使用時（タイトル/サブはバナー内に
+    含まれるため重複させない・リード文とモード見出しだけ出す）。"""
+    hero = '''
   <div class="hb-hero">
     <p class="hb-title">🎭 敵対D-Meter</p>
     <div class="hb-sub">惨劇RoopeR入門＆研究ツールβ ── ルール相談AI ＆ AIと学ぶ対戦練習（First Steps / Basic Tragedy X）</div>
-  </div>
+  </div>''' if with_title else ''
+    return f'''
+<div class="hb-wrap">{hero}
   <p class="hb-lead">惨劇RoopeR（5th）のルール相談と、AIと対戦して学ぶ練習環境をまとめたページです。
   下のボタン、または左のメニュー「モード」から選んでください。</p>
   <div class="hb-h">モード</div>
@@ -122,7 +125,17 @@ def render_home(app_version: str = "", build_info: str = "",
     on_click コールバックは次回runのwidget生成前に走るため、radioのkeyへ安全に代入できる。
     """
     st.markdown(_STYLE, unsafe_allow_html=True)
-    st.markdown(_hero_html(), unsafe_allow_html=True)
+    # ★オリジナルバナー（ユーザー制作 2026-07-25）：assets/banner.jpg があれば画像タイトル、
+    #   無ければ従来のテキストタイトル（フォールバック＝ミラー欠落やローカルでも壊れない）。
+    _banner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "banner.jpg")
+    if os.path.exists(_banner):
+        try:
+            st.image(_banner, use_container_width=True)
+        except TypeError:  # 旧Streamlit（use_container_width未対応）
+            st.image(_banner, use_column_width=True)
+        st.markdown(_hero_html(with_title=False), unsafe_allow_html=True)
+    else:
+        st.markdown(_hero_html(), unsafe_allow_html=True)
 
     def _go(mode_label: str) -> None:
         st.session_state["app_mode"] = mode_label

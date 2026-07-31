@@ -30,12 +30,22 @@ def _chip(text: str, color: str) -> str:
     )
 
 
-def _card(owner: str, card: str, negated: bool = False) -> str:
+#: ★B-100 デバッグ表示（2026-07-29・ユーザー要望）：主人公AIの札のうち
+#  「B-100 の絶対防御（制約充足）で決まったもの」の枠色（緑）。**開発モードでのみ**渡される
+#  ＝呼び出し側が prov を渡さなければ従来色のまま（bit 不変）。
+_PROV_COLOR = {"b100": "#3f9e4d"}
+
+
+def _card(owner: str, card: str, negated: bool = False,
+          prov: str | None = None) -> str:
     # 行動カードは「白地・黒字」の実カード風にして、状態チップ（不安/友好/暗躍の枠線チップ）と
     # 一目で区別できるようにする。持ち主は枠色＋先頭ラベル（脚=赤／主=青）で表す。
     # 白地×黒字はライト/ダーク両テーマで可読（board全体の枠線チップ方針の例外＝意図的）。
+    # ★prov（provenance）＝その札がどの経路で決まったか。既定 None＝従来色。
     mm = owner == _MM
     color = "#c0504d" if mm else "#4f81bd"
+    if not mm and prov:
+        color = _PROV_COLOR.get(prov, color)
     owner_label = "脚" if mm else "主"
     text = _h.escape(str(card))
     if negated:
@@ -159,11 +169,17 @@ def _char_label(name: str, role: str | None, alive: bool, *, popup: bool = False
 
 # ---------- 入力盤面（翻訳JSONから） ----------
 
-def board_html_from_json(data: dict | None, *, popup: bool = False) -> str | None:
+def board_html_from_json(data: dict | None, *, popup: bool = False,
+                         dev: bool = False) -> str | None:
     """翻訳JSON（AIの理解）を盤面HTMLに。盤面情報が無い質問（フェイズ全般等）は None。
 
     popup=True（A-34・一人回し両モードの盤面）＝キャラ名にカードテキストのCSSポップアップを付ける
     （PC=hover／スマホ=タップ）。既定 False＝従来どおり（相談AI/builder/viewer 等は様子見）。
+
+    ★dev=True（B-100・2026-07-29・ユーザー要望）＝**開発モード限定**のデバッグ表示。
+      placement の `prov`（provenance）を札チップに渡す＝B-100 の絶対防御で決まった
+      主人公AIの札の枠を緑にする。既定 False＝prov を一切見ない＝従来と bit 不変
+      （安定版 `APP_CHANNEL=stable` では呼び出し側が dev を立てない）。
     """
     if not isinstance(data, dict):
         return None
@@ -188,7 +204,8 @@ def board_html_from_json(data: dict | None, *, popup: bool = False) -> str | Non
     for a in AREAS:
         parts: list[str] = []
         head = _counter_badges(anyaku=int(board_anyaku.get(a) or 0))
-        head += "".join(_card(p.get("owner", ""), p.get("card", ""))
+        head += "".join(_card(p.get("owner", ""), p.get("card", ""),
+                              prov=(p.get("prov") if dev else None))
                         for p in cards_by_board.get(a, []))
         if head:
             parts.append(f"<div>{head}</div>")
@@ -199,7 +216,8 @@ def board_html_from_json(data: dict | None, *, popup: bool = False) -> str | Non
                                popup=popup)
             line += _counter_badges(int(c.get("goodwill") or 0), int(c.get("unrest") or 0),
                                     int(c.get("anyaku") or 0))
-            line += "".join(_card(p.get("owner", ""), p.get("card", ""))
+            line += "".join(_card(p.get("owner", ""), p.get("card", ""),
+                                  prov=(p.get("prov") if dev else None))
                             for p in cards_by_char.get(str(c.get("name", "")), []))
             parts.append(f"<div>{line}</div>")
         cells[a] = "".join(parts)

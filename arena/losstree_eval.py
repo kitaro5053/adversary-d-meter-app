@@ -138,15 +138,31 @@ def _gate_structural_ok(gate: dict, possible_ry: set, possible_rx: set,
     return True
 
 
-def _gate_roles_ok(gate: dict, possible_roles: set) -> bool:
-    """役職の gate（belief で消えていないか＝pruned の材料）。roles_any/or_rule_x も見る。"""
+def _gate_roles_ok(gate: dict, possible_roles: set, possible_rx: set) -> bool:
+    """役職の gate（belief で消えていないか＝pruned の材料）。roles_any/or_rule_x/roles_vip も見る。
+
+    ★U-3（手練れ実戦FB・2026-07-27）：`or_rule_x` を **possible_rx と突き合わせる**（旧実装は
+    `bool(gate.get("or_rule_x"))`＝ノード定義にキーが在るだけで常にTrue＝**この条件は一度も
+    評価されていなかった**）。同じ判定を行う `losstree.script_possible` は最初から
+    `any(r in rule_x for r in ...)` と正しく書かれており、そちらが意図の正典。
+    実害＝FS脚本（妄想拡大ウイルスはBTX専用）でも SK系ノードの gate が通り、
+    シリアルキラーの役職質量が全世界ゼロなのに「⚪未活性」と表示されていた（＝誤情報）。
+
+    ★健全性（最優先）：ここで False を返す＝「起こりえない」と断定すること。
+    「可能性が残るものを誤ってゼロにする」方が「未活性で出す」より有害（防御の見落とし）＝
+    **確実にゼロと言える時だけ** False にする。roles_vip も any（どれか1つでも可能なら通す）。
+    """
     if "roles" in gate and not all(r in possible_roles for r in gate["roles"]):
         return False
     if "roles_any" in gate or "or_rule_x" in gate:
         any_role = any(r in possible_roles for r in gate.get("roles_any", []))
-        any_rule = bool(gate.get("or_rule_x"))   # or_rule_x はルール側で拾う（構造ゲート済み）
+        any_rule = any(r in possible_rx for r in gate.get("or_rule_x", []))
         if not (any_role or any_rule):
             return False
+    # ★U-3：VIP（KP相当）の存在要求＝「キーパーソン or ファクター（都市暗躍≥2でKP能力・50:174）」の
+    #   どちらも全世界ゼロなら、その死亡を起点にする負け筋は起こりえない。
+    if "roles_vip" in gate and not any(r in possible_roles for r in gate["roles_vip"]):
+        return False
     return True
 
 
@@ -215,7 +231,7 @@ def evaluate_tree(view: dict, belief, options: list | None = None,
             out.append(NodeStatus(nid, "gap", 0.0, "検出器が未実装（評価器未接続）"))
             continue
         # 3) pruned＝belief で必要役職が全世界0
-        if not _gate_roles_ok(gate, possible_roles):
+        if not _gate_roles_ok(gate, possible_roles, possible_rx):
             out.append(NodeStatus(nid, "pruned", 0.0,
                                   "belief で必要役職が全ての可能世界から消えた"))
             continue

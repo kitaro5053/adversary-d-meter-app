@@ -14,7 +14,6 @@ history には結果のみ（理由なし＝00:127）、secret_log には理由�
 from __future__ import annotations
 
 from engine import Board, Character, Placement, resolve_incident
-from engine.data import forbidden_of
 from engine.turn_end_rules import (
     is_immortal,
     killer_can_kill_protagonist,
@@ -24,7 +23,7 @@ from engine.turn_end_rules import (
     timetraveler_can_defeat,
 )
 
-from .state import GameState, Incident
+from .state import GameState, Incident, current_forbidden
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +42,8 @@ def to_engine_board(state: GameState) -> Board:
         if not c.on_board:
             continue
         # 医者能力3等でこのループ禁止エリアを失っているキャラは forbidden 空で写す
-        forb = frozenset() if c.name in state.forbidden_lifted else forbidden_of(c.name)
+        # （E-2：判定は state.current_forbidden に一本化＝挙動は従来と同一）
+        forb = current_forbidden(state, c.name)
         b.add_character(Character(
             name=c.name, role=c.role, area=c.area,
             forbidden=forb, alive=c.alive,
@@ -473,8 +473,23 @@ def _apply_incident_effect(state: GameState, inc: Incident, decide,
 
     elif name == "行方不明":
         # 犯人を任意ボードへ移動→犯人のいるボードに暗躍+1（40:153）
+        # ★E-2（ユーザー実戦報告＋公式裁定 2026-07-29）：この移動も**犯人の禁止エリアへは
+        #   行えない**（KB: 40 事件表の注／50 「行方不明」節）。禁止エリア＝「そのキャラが
+        #   移動できないボード」（KB: 00）＝移動の出所（行動カード／事件効果）を問わない。
+        #   修正前は全4ボードを候補にしていたため、犯人サラリーマン（禁止＝学校）が学校へ
+        #   移動できていた（実戦報告の再現）。
+        #   ★このループの禁止解除（医者能力3等）は current_forbidden が反映する。
+        #   ★現在地は常に候補に残す＝「任意のボード」には今いるボードも含まれ、結果として
+        #     「移動しない」を選べる（現在地は定義上そのキャラが居られるボード）。これにより
+        #     候補が空になることは無い（入院患者/A.I.＝4枠中3枠禁止でも現在地は残る）。
+        #     暗躍+1 は条文どおり「その後、**犯人のいるボード**に」＝移動しなくても必ず置かれる。
+        _forb = current_forbidden(state, culprit.name)
+        _dests = [a for a in state.board_anyaku
+                  if a == culprit.area or a not in _forb]
+        if not _dests:  # 理論上到達しない（犯人は生存かつ盤上＝現在地がある）。安全側＝移動しない。
+            _dests = [culprit.area]
         chosen = decide(chooser, "incident_choice",
-                        [{"target": a} for a in state.board_anyaku])
+                        [{"target": a} for a in _dests])
         culprit.area = chosen["target"]
         state.board_anyaku[chosen["target"]] += 1
         _pub(state, {"event": "move", "name": culprit.name, "to": chosen["target"]})

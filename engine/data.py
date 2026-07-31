@@ -54,6 +54,30 @@ def role_absolute_friendship_ignore(role: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# ルールY → 「その事件が**発生した事実そのもの**が敗北条件になる」事件（単一ソース）
+# ---------------------------------------------------------------------------
+# 未来改変プラン（rules/50_basic_tragedy_x.md:45-47）：
+#   「このループ中に蝶の羽ばたきが発生していた場合、ループ終了時に主人公は敗北する。」
+#   事件テキスト＝同 217-219（友好/不安/暗躍から1種を選び、犯人と同一エリアのキャラ1人に1つ置く）。
+#   ＝**盤面への打点ではなく発生そのもの**が勝ち筋＝犯人の不安を臨界へ運べば成立する。
+# ★この表は sim/loop_race._butterfly_path・sim/script_quality.win_path_groups・
+#   agents/heuristic（勝ち筋の列挙）が共有する（A-74・二重定義の回避）。
+RULE_Y_INCIDENT_DEFEAT: dict[str, str] = {
+    "未来改変プラン": "蝶の羽ばたき",
+}
+
+
+def incident_defeats_protagonists(rule_y: str | None, incident_name: str) -> bool:
+    """その事件の**発生そのもの**がルールYの敗北条件を成立させるか。KB: 50:45-47。"""
+    return bool(rule_y) and RULE_Y_INCIDENT_DEFEAT.get(rule_y) == incident_name
+
+
+def rule_y_decisive_incident(rule_y: str | None) -> str | None:
+    """ルールYの「発生＝敗北」事件名（無ければ None）。KB: 50:45-47。"""
+    return RULE_Y_INCIDENT_DEFEAT.get(rule_y) if rule_y else None
+
+
+# ---------------------------------------------------------------------------
 # キャラ → 禁止エリア（移動できないボード）。KB: 30_characters.md。
 # ---------------------------------------------------------------------------
 # エリアは4ボード：病院／神社／都市／学校。

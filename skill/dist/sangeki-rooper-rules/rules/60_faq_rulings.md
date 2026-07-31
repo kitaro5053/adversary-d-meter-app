@@ -1,7 +1,7 @@
 <!--
 惨劇RoopeR 5th 構造化ルールKB — 60: FAQ・裁定集
-私的利用前提。原本（BakaFire『惨劇RoopeR 5th』脚本家の書）の自己使用複製として作成。
-第三者への頒布時はBakaFireの許諾が必要。
+原本（BakaFire Party『惨劇RoopeR 5th』脚本家の書）からの転載KB。
+BakaFire Party二次創作ガイドライン（https://bakafire.main.jp/rooper/sr_dl_04_sozai.htm）に基づき、出典明記のうえ転載（原作：BakaFire Party製『惨劇RoopeR』・非公式ファンメイド）。
 出典:
   [書] = 脚本家の書 p13-15（FAQ Q1-Q26）。本KBでは要旨を自分の言葉で要約。
   [誤] = 公式正誤（bakafire.main.jp の公式FAQ）。

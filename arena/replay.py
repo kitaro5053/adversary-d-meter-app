@@ -127,10 +127,16 @@ def board_json_from_snapshot(snap: dict, omniscient: bool = False) -> dict:
     show_cards = omniscient or snap.get("reveal_cards", False)
     placements = []
     for p in snap.get("turn_placements", []):
-        placements.append({
+        d = {
             "owner": p["owner"], "target": p["target"], "target_kind": p["target_kind"],
             "card": p["card"] if show_cards else "？",
-        })
+        }
+        # ★B-100（2026-07-29）：provenance（その札がどの経路で決まったか）は**神視点のみ**運ぶ。
+        #   AI脚本家の view（sim/views._masked_placements）には載せない＝情報の非対称を壊さない。
+        #   表示側は board_html_from_json(dev=True) のときだけ読む（開発モード限定）。
+        if omniscient and p.get("prov"):
+            d["prov"] = p["prov"]
+        placements.append(d)
     return {"characters": chars, "placements": placements,
             "board_anyaku": snap["board_anyaku"]}
 

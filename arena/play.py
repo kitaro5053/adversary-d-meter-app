@@ -23,8 +23,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import os  # noqa: E402
 
 from agents import HeuristicMastermind, LLMMastermind  # noqa: E402
-from arena.gamelog import game_to_jsonl  # noqa: E402
+from arena.gamelog import (  # noqa: E402
+    LOG_DOWNLOAD_MIME, game_to_jsonl, log_file_name, log_position_key, stable_saved_at)
 from arena.interactive import PendingHuman, ReplayDesync, play_interactive  # noqa: E402
+from arena.loopcap import (  # noqa: E402  ★U-10：総ループ数（4ループ＋延長）の単一ソース
+    apply_loop_cap, restored_extra_loops, total_loops)
 from arena.replay import (  # noqa: E402
     board_json_from_snapshot,
     board_json_from_view,
@@ -48,7 +51,7 @@ from sim.reference import (  # noqa: E402
     RULE_Y_REFERENCE,
     role_placement_summary,
 )
-from sim import random_script  # noqa: E402
+from sim import DAY_OPTIONS, DEFAULT_DAYS, random_script  # noqa: E402
 from sim.sample_scripts import SAMPLE_SCRIPTS  # noqa: E402
 
 
@@ -87,7 +90,11 @@ def _script_labels() -> dict[str, str]:
     常に同期。レーン規律で読み取り/importは自由・play_vs_ai の play 参照は全て遅延importで
     循環なし）。ラベルは表示専用＝内部識別子(値)や保存(?g=は内部名)は不変。ユーザー選定 2026-07-10。"""
     from arena.play_vs_ai import _SCRIPT_ALIASES
-    labels = {"🔰 メンバー調整FS": "beginner_FS",
+    # ★B-53b（2026-07-26）：⭐ スタンダードを**最上段**に置く（＝selectbox の既定＝一番選びやすい
+    #   位置。ユーザー要望「もっとメンバーを絞ったコモンプールからしか出ない脚本が欲しい」）。
+    labels = {"⭐ スタンダードFS": "standard_FS",
+              "⭐ スタンダードBTX": "standard_BTX",
+              "🔰 メンバー調整FS": "beginner_FS",
               "🔰 メンバー調整BTX": "beginner_BTX",
               "🎲 ランダムFS": "random_FS", "🎲 ランダムBTX": "random_BTX"}
     for k in _SAMPLE_KEYS:
@@ -95,12 +102,25 @@ def _script_labels() -> dict[str, str]:
     return labels
 
 
-def _load_script(name: str, seed: int):
+# 生成脚本（seed＋日数から作る）の内部名の接頭辞＝日数セレクタが効く対象（サンプルは固定日数）。
+# ★日数の選択肢／既定（DAY_OPTIONS/DEFAULT_DAYS）は `sim.generator` が単一ソース（上でimport）。
+_GENERATED_PREFIXES = ("standard_", "beginner_", "random_")
+
+
+def is_generated_script(name: str) -> bool:
+    """その脚本名が『seed から生成する脚本』か（＝日数セレクタが効くか）。Streamlit非依存。"""
+    return str(name).startswith(_GENERATED_PREFIXES)
+
+
+def _load_script(name: str, seed: int, days: int = DEFAULT_DAYS):
+    if name.startswith("standard_"):
+        # ★B-53b：スタンダードメンバー＝STANDARD_CAST_POOL（KB70 導入難度★1・★2 の14体）だけ。
+        return random_script(set_name=name.split("_", 1)[1], seed=seed, days=days, standard=True)
     if name.startswith("beginner_"):
         # 初心者向け＝複雑な能力・特性のキャラが出にくいメンバー偏り生成（脚本家プレイと同一）。
-        return random_script(set_name=name.split("_", 1)[1], seed=seed, beginner=True)
+        return random_script(set_name=name.split("_", 1)[1], seed=seed, days=days, beginner=True)
     if name.startswith("random_"):
-        return random_script(set_name=name.split("_", 1)[1], seed=seed)
+        return random_script(set_name=name.split("_", 1)[1], seed=seed, days=days)
     return SAMPLE_SCRIPTS[name]()
 
 
@@ -144,6 +164,11 @@ def _encode_game() -> str | None:
         "d": int(st.session_state.get("play_seed", 0)),
         "c": st.session_state.get("choices", []),
     }
+    # ★B-53b：1ループの日数（3/4/5/6）。**既定(3日)のときは書かない**＝既存URLと同じ
+    #   ペイロードのまま（後方互換：欠落＝3として読む・_decode_game 側と対）。
+    _days = int(st.session_state.get("play_days", DEFAULT_DAYS))
+    if _days != DEFAULT_DAYS:
+        payload["y"] = _days
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(zlib.compress(raw, 9)).decode("ascii")
 
@@ -222,7 +247,7 @@ _SAVE_TYPE = "rooper_play_save"
 #   「機構は正しいが全経路への配線を忘れる」）。登録先を1箇所にして構造的に潰す。
 _PLAY_GAME_KEYS: tuple[str, ...] = (
     # 対局の同一性
-    "play_script", "play_script_obj", "play_seed", "play_tutorial",
+    "play_script", "play_script_obj", "play_seed", "play_days", "play_tutorial",
     "choices", "play_ai_replay", "play_load_warning",
     # 進行に紐づくフラグ
     "play_extra_loops", "play_do_final_battle", "_play_end_logged",
@@ -357,7 +382,7 @@ def _apply_loaded_game(raw: bytes) -> bool:
                         # ★A-36：snapshot(dict) 保持＝再実行部が毎rerun 新品stateを起点にする
                         play_snap_state=_st0.to_snapshot(),
                         play_snap_ai_replay=(_ai or None), choices=list(_hc),
-                        play_extra_loops=max(0, int(_st0.loop_no) - 4),   # A-31
+                        play_extra_loops=restored_extra_loops(_st0),   # A-31／U-10（loopcapが単一ソース）
                         play_snap_warn="／".join(x for x in (_norm,) if x),
                         play_load_warning=_compat)
                 else:
@@ -383,6 +408,8 @@ def _apply_loaded_game(raw: bytes) -> bool:
             return False
         # ★A-32：対局に紐づく状態は _reset_play_game で全消し（登録先は _PLAY_GAME_KEYS 一箇所）。
         _reset_play_game(play_script=d["s"], play_seed=int(d.get("d", 0)),
+                         # ★B-53b：日数（欠落＝3日＝旧セーブとの後方互換）
+                         play_days=int(d.get("y", DEFAULT_DAYS)),
                          choices=list(d.get("c", [])))
         st.session_state["play_mm"] = d.get("m", "heuristic")   # AI設定＝対局に紐づかない
     except Exception:  # noqa: BLE001  壊れたファイルは無視
@@ -422,7 +449,7 @@ def _restore_game_from_url() -> None:
                     play_snap_state=_st0.to_snapshot(), play_snap_ai_replay=(_ai or None),
                     choices=list(_hc), play_script_obj=_st0.script,   # 脚本はsnapshot内蔵
                     play_script="クラウド（続き）", play_seed=0,
-                    play_extra_loops=max(0, int(_st0.loop_no) - 4),   # A-31
+                    play_extra_loops=restored_extra_loops(_st0),   # A-31／U-10（loopcapが単一ソース）
                     play_snap_warn="／".join(x for x in (_why, _norm) if x))
                 st.session_state["play_auto_token"] = _tok          # 以後も同じ行へ上書き（消さない）
                 return
@@ -437,6 +464,7 @@ def _restore_game_from_url() -> None:
     st.session_state["play_script"] = d["s"]
     st.session_state["play_mm"] = d.get("m", "heuristic")
     st.session_state["play_seed"] = int(d.get("d", 0))
+    st.session_state["play_days"] = int(d.get("y", DEFAULT_DAYS))  # B-53b（欠落＝3日）
     st.session_state["choices"] = list(d["c"])
 
 
@@ -723,11 +751,27 @@ def render_play(mobile: bool = False, stable: bool = False) -> None:
         mm_kind = _MM_LABELS[mm_label]
         st.caption("🚫 LLM脚本家（未検証・現在は選べません）")
         seed = st.number_input("seed（脚本家AI＋ランダム脚本の種）", value=0, step=1)
-        if script_name.startswith("beginner_"):
+        # ★B-53b（2026-07-26）：1ループの日数（3/4/5/6・既定3）。生成脚本（⭐/🔰/🎲）にのみ効く
+        #   ＝手書きサンプルは脚本ごとに日数が固定なので選べない（グレーアウト）。
+        _gen = is_generated_script(script_name)
+        days = int(st.selectbox(
+            "1ループの日数", DAY_OPTIONS, index=DAY_OPTIONS.index(DEFAULT_DAYS),
+            disabled=not _gen,
+            help="⭐/🔰/🎲 の自動生成脚本の日数です（花の名前のサンプルは脚本ごとに固定）。"
+                 "日数が増えるほど脚本家に有利＝難しくなります。"))
+        if not _gen:
+            days = DEFAULT_DAYS      # サンプル脚本は自前の日数を持つ＝この値は使われない
+        if script_name.startswith("standard_"):
+            st.caption("⭐ スタンダードメンバー：定番キャラ14人だけの脚本です（特殊な特性・"
+                       "変則キャラは出ません）。seedを変えると登場人物・ルール・事件が変わります。")
+        elif script_name.startswith("beginner_"):
             st.caption("🔰 メンバー調整：複雑な能力・特性のキャラが出にくくなります。"
                        "seedを変えると登場人物・ルール・事件が変わります。")
         elif script_name.startswith("random_"):
             st.caption("🎲 ランダム脚本：seedを変えると登場人物・ルール・事件が変わります。")
+        if _gen and days >= 4:
+            st.caption(f"⏳ {days}日の脚本は生成に数秒〜十数秒かかることがあります"
+                       "（1対局も長くなります）。")
         st.caption("脚本の真実（配役・犯人・ルール）は伏せられています。")
         # ★チュートリアル教材：既定は非表示。下の「📖 チュートリアル」トグルON時のみ、
         #   ここ（seed の下）に入門教材の選択を出す（ユーザー要望 2026-07-10）。
@@ -753,7 +797,8 @@ def render_play(mobile: bool = False, stable: bool = False) -> None:
             #   終局フラグ・推理メモ等）は _reset_play_game が**一括で**消す＝個別に列挙しない
             #   （列挙すると新機構を足した時にここへの追加を忘れる＝A-32の原因そのもの）。
             _reset_play_game(play_script=_TUT_SCRIPT.get(tut_key, script_name),
-                             play_tutorial=tut_key, play_seed=int(seed), choices=[])
+                             play_tutorial=tut_key, play_seed=int(seed),
+                             play_days=days, choices=[])   # ★B-53b：1ループの日数
             st.session_state["play_mm"] = mm_kind
             import cloud as _cloud
             _cloud.log_event("play_start", side="protagonist",  # 共通イベント（メタのみ）
@@ -808,24 +853,46 @@ def render_play(mobile: bool = False, stable: bool = False) -> None:
                     st.error("このファイルは対局セーブ／棋譜として読み込めませんでした。")
         # ★自作脚本のプレイ投入口（§2b・2026-07-13）：script_studio/脚本ビルダーで組んだ脚本JSONを
         #   開始脚本として読み込む（ランダム生成でなく自作脚本で一人回し）。
-        with st.expander("✍️ 自作脚本で始める（script_studio/脚本ビルダーの『プレイ用JSON』を貼付）"):
-            _cj = st.text_area("脚本JSON を貼り付け", key="play_custom_json", height=120,
-                               placeholder='{"set_name": "First Steps", "rule_y": "...", ...}')
-            st.caption("⚠ 自作脚本の対局は **URL自動保存の対象外**です（リロード/ブラウザ復元で消えます）。"
-                       "続きを残すには下部『📼 ログを保存(.jsonl=棋譜)』の**ダウンロード**をご利用ください"
-                       "（棋譜.jsonl は脚本を内包＝そのまま読み込めば復帰できます。.rooper.json は seed 基盤"
-                       "＝自作脚本は復元できません）。")
-            if st.button("この脚本で始める", key="play_custom_start"):
-                _sc, _err = _script_from_json(_cj or "")
-                if _sc is None:
-                    st.error(_err)
-                else:
-                    # ★A-32：入口は _reset_play_game を通す（対局キーの全消し＋必要分の設定）。
-                    _reset_play_game(play_script_obj=_sc,        # 確定脚本を直接使う
-                                     play_script="自作脚本", play_seed=0, choices=[])
-                    st.session_state["play_mm"] = "heuristic"
-                    st.success("自作脚本を読み込みました。")
+        # ★U-7（2026-07-29・ユーザー要望）：**貼付欄（text_area）と畳み（expander）を撤去**する。
+        #   U-6でファイル読み込み（D&D可）を入れた時点で貼付欄は不要になった＝投入口はファイル1本。
+        #   ★ただし**内部の受け渡しは session_state のまま**（キー "play_custom_json"）＝検証
+        #   （_script_from_json）と開始の経路は U-6 と同じ1本のまま＝分岐を増やさない。
+        #   畳み撤去＝常時展開（見出しは markdown。脚本家プレイ側 play_vs_ai.py と作法を揃える）。
+        st.markdown("**✍️ 自作脚本で始める**（script_studio/脚本ビルダーの『プレイ用JSON』）")
+        _up = st.file_uploader(
+            "📂 脚本JSONファイルを読み込む（.json）", type=["json"],
+            key="play_custom_file",
+            help="script_studio/脚本ビルダーの『🎮 プレイ用JSON』を保存したファイルを"
+                 "選ぶ（ドラッグ&ドロップ可）。")
+        if _up is not None:
+            import hashlib
+            _raw = _up.getvalue()
+            _sig = hashlib.md5(_raw).hexdigest()
+            if st.session_state.get("_play_custom_sig") != _sig:  # 再読込ループ防止
+                st.session_state["_play_custom_sig"] = _sig
+                try:
+                    st.session_state["play_custom_json"] = _raw.decode("utf-8")
                     st.rerun()
+                except UnicodeDecodeError:
+                    st.error("UTF-8のJSONファイルを選んでください。")
+        _cj = st.session_state.get("play_custom_json") or ""
+        if _cj.strip():   # 貼付欄が無くなった分、読み込み済みかどうかは文字数で示す
+            st.caption(f"✅ 脚本JSONを読み込み済み（{len(_cj)}文字）。")
+        st.caption("⚠ 自作脚本の対局は **URL自動保存の対象外**です（リロード/ブラウザ復元で消えます）。"
+                   "続きを残すには下部『📼 ログを保存(.jsonl=棋譜)』の**ダウンロード**をご利用ください"
+                   "（棋譜.jsonl は脚本を内包＝そのまま読み込めば復帰できます。.rooper.json は seed 基盤"
+                   "＝自作脚本は復元できません）。")
+        if st.button("この脚本で始める", key="play_custom_start"):
+            _sc, _err = _script_from_json(_cj)
+            if _sc is None:
+                st.error(_err)
+            else:
+                # ★A-32：入口は _reset_play_game を通す（対局キーの全消し＋必要分の設定）。
+                _reset_play_game(play_script_obj=_sc,        # 確定脚本を直接使う
+                                 play_script="自作脚本", play_seed=0, choices=[])
+                st.session_state["play_mm"] = "heuristic"
+                st.success("自作脚本を読み込みました。")
+                st.rerun()
         # ★A-39（2026-07-19）：「☁ 共有コードから読み込む」は撤去（発行側も同時撤去）。共有コードは
         #   棋譜payload＝replay 復元でドリフトする一方、下の☁トークン（snapshot）が同じ用途を
         #   replay非依存で満たす＝保存方式を2本（☁トークン＋📼ログ）に集約した。
@@ -864,7 +931,7 @@ def render_play(mobile: bool = False, stable: bool = False) -> None:
                         choices=list(_hc), play_script_obj=_st0.script,
                         play_script="クラウド（続き）", play_seed=0,
                         # ★A-31：延長ループの復元（総ループ 4+extra が loop_no を下回ると即終局）。
-                        play_extra_loops=max(0, int(_st0.loop_no) - 4),
+                        play_extra_loops=restored_extra_loops(_st0),
                         play_snap_warn="／".join(x for x in (_why, _norm) if x))
                     _cloud.log_event("cloud_snapshot_load", side="protagonist", ok=True)
                     st.rerun()
@@ -877,17 +944,27 @@ def render_play(mobile: bool = False, stable: bool = False) -> None:
         _qp_set(_GAME_QP_KEY, None)  # 未開始＝URLの残骸を消す
         st.info("← サイドバーで脚本を選び『この設定で開始』を押してください。"
                 "あなたは主人公3席を担当し、AI脚本家に挑みます。"
+                "⭐スタンダードは定番キャラ14人だけ、"
                 "🔰メンバー調整は、複雑な能力・特性のキャラが出にくくなります。")
         st.stop()
 
     # 棋譜（.jsonl）から読み込んだ場合は確定脚本(play_script_obj)を直接使う（seed再生成しない）。
     _obj = st.session_state.get("play_script_obj")
-    script = _obj if _obj is not None else _load_script(
-        st.session_state["play_script"], st.session_state["play_seed"])
+    if _obj is not None:
+        script = _obj
+    else:
+        # ★B-53b：4日以上は詰みソルバ検証で生成に数秒〜十数秒かかりうる＝スピナーで無反応に
+        #   見せない（3日はキャッシュ込みで即時＝従来どおり）。
+        _days = int(st.session_state.get("play_days", DEFAULT_DAYS))
+        with st.spinner(f"脚本を準備中…（1ループ{_days}日）"):
+            script = _load_script(st.session_state["play_script"],
+                                  st.session_state["play_seed"], _days)
     # ★4ループ打ち切り（ユーザー/AIC 2026-07-11）：脚本の loops に依らず 4 ループで区切る。
     #   「まだループする」を選ぶたび play_extra_loops が増え、その分だけ延長できる。
     from dataclasses import replace as _replace
-    _total_loops = 4 + int(st.session_state.get("play_extra_loops", 0))
+    # ★U-10：総ループ数は loopcap.total_loops が単一ソース（実行の上限＝ヘッダの分母＝
+    #   打ち切り画面の「Nループでは…」が必ず同じ数になる）。
+    _total_loops = total_loops(st.session_state.get("play_extra_loops", 0))
     script = _replace(script, loops=_total_loops)
     _mm_kind = st.session_state.get("play_mm", "heuristic")
     _show_mm = st.session_state.get("play_show_mm", False)
@@ -925,6 +1002,10 @@ def render_play(mobile: bool = False, stable: bool = False) -> None:
         _snap_state = _GSr.from_snapshot(_snap_raw)
     else:
         _snap_state = _snap_raw          # 後方互換（旧 GameState 直保持）
+    # ★U-10（2026-07-30）：復元経路は play_interactive が `state = initial_state` で走る＝
+    #   **復元局面が持つ script の loops** が上限になり、上の `replace(script, loops=_total_loops)`
+    #   が効かない（「まだループする」を押しても総ループ数が増えない）。起点の上限を揃える。
+    apply_loop_cap(_snap_state, _total_loops)
     _snap_ai = st.session_state.get("play_snap_ai_replay") if _snap_state else None
     # ★UIが日境界を掴むフック（PendingHuman.state は常に mastermind_set 後＝日境界ではない）。
     #   ここで撮った局面が「クラウド保存の起点」になる。
@@ -1027,7 +1108,7 @@ def render_play(mobile: bool = False, stable: bool = False) -> None:
             and pending.decision == "final_battle_guess"
             and not st.session_state.get("play_do_final_battle")):
         from arena.endscreen import go_home, render_outcome_banner
-        _nloops = 4 + int(st.session_state.get("play_extra_loops", 0))
+        _nloops = _total_loops       # ★U-10：ヘッダの分母と同じ値（単一ソース）
         st.title("🎮 主人公としてプレイ")
         render_outcome_banner(
             st, won=False,
@@ -1116,14 +1197,21 @@ def render_play(mobile: bool = False, stable: bool = False) -> None:
             _rs_key = (state.loop_no, state.day)
             _rs = ({"loop": _rs_key[0], "day": _rs_key[1], "snapshot": _day_snaps[_rs_key]}
                    if _day_snaps.get(_rs_key) else None)
+            # ★U-4（2026-07-27）：脚本家プレイ（play_vs_ai）と命名規約を統一＝日本語の脚本名を
+            #   外し、日時（UTC・分単位）＋セット＋日数＋seed のASCIIだけにする。
+            # ★U-8（2026-07-29）：`utc_saved_at()` を毎run呼ぶと**秒ごとにdataが変わる**＝
+            #   Streamlit のメディアURLが1回のrerunで失効し、404のHTMLが保存される事故になる
+            #   （機序は arena/gamelog.py の U-8 コメント）。局面が同じ間は同じ日時を使う。
+            #   ★slot は3箇所（top/end/bottom）で共通＝data も名前も一致＝メディアは1つで済む。
+            _sa = stable_saved_at(st.session_state, "play", log_position_key(state, log))
             st.download_button(
                 "📼 ログを保存（ビューア用）",
                 data=game_to_jsonl(script, state, log,
                                    app_version=st.session_state.get("app_version", ""),
-                                   resume_snapshot=_rs),
-                file_name=f'play_{st.session_state["play_script"]}'
-                          f'_seed{st.session_state["play_seed"]}.jsonl',
-                mime="application/json",
+                                   resume_snapshot=_rs, saved_at=_sa),
+                file_name=log_file_name("play", script,
+                                        st.session_state.get("play_seed"), saved_at=_sa),
+                mime=LOG_DOWNLOAD_MIME,
                 help="保存した .jsonl を『🔁 リプレイビューア』モードで開くと日単位で振り返れます。",
                 key=f"save_log_btn_{key}",
             )

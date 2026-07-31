@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from engine.data import is_student, unrest_threshold_of
+from engine.data import is_student, rule_y_decisive_incident, unrest_threshold_of
 
 # 犯人の不安を下げられる＝事件をブロックしやすくする役割のキャラ（誰でも対象に取れる系）。
 #   医者=不安1除去／ナース=臨界以上の不安を全除去（事件ブロックに特に強い）／
@@ -30,6 +30,11 @@ KILL_INCIDENTS: frozenset[str] = frozenset({"殺人事件", "遠隔殺人", "病
 # 盤面（ボード）の暗躍を育てる事件（盤面敗北条件を後押し＝暗躍除去だけでは追いつかなくする）。
 # ★B-36：不安拡大は除外＝その暗躍+1は board_anyaku でなく**キャラ**に付く（40:149・sim/effects.py
 #   確認済）＝盤面敗北条件を直接育てない。ここに含めるのは board_anyaku を増やす事件のみ。
+# ★A-78（2026-07-30）：本定数は**現在どこからも参照されていない**（`win_path_groups` の "board"
+#   グループは `ry in BOARD_RULES` だけで決まる）＝供給会計には使われていない。将来使う際は
+#   **行方不明は「任意のボード」ではない**ことに注意＝供給先は**犯人が移動できるボードだけ**
+#   （E-2 公式裁定・KB: 00 禁止エリアの定義／40 事件まわりの注意）。判定の単一ソース＝
+#   `sim.state.missing_incident_boards_from_view`。邪気の汚染は神社固定＝この制限を受けない。
 BOARD_FEED_INCIDENTS: frozenset[str] = frozenset({"邪気の汚染", "行方不明"})
 # 盤面敗北条件を持つルールY。
 BOARD_RULES: frozenset[str] = frozenset(
@@ -101,7 +106,9 @@ def win_path_groups(script) -> set[str]:
         groups.add("tt")
 
     # 8. 蝶の羽ばたき×未来改変プラン（★発生しない蝶＝勝ち筋に数えない：ユーザー方針 2026-07-11）
-    if ry == "未来改変プラン" and "蝶の羽ばたき" in (incidents & feasible_incs):
+    #    ★A-74：ルールYと事件名の対応は engine.data.RULE_Y_INCIDENT_DEFEAT が単一ソース。
+    _decisive = rule_y_decisive_incident(ry)
+    if _decisive and _decisive in (incidents & feasible_incs):
         groups.add("butterfly")
 
     return groups
@@ -282,8 +289,6 @@ def incident_feasibility_verdict(script) -> str | None:
 _SINGLE_LINE_SOFT: frozenset[str] = frozenset({"incident_kill", "mainlovers"})
 #: backbone がこの集合の単一要素なら「暗躍禁止で塞げる単一線」。
 _SINGLE_LINE_BACKBONE_OK: frozenset[str] = frozenset({"board", "kp_anyaku"})
-#: 暗躍禁止で止まらない供給（rule_x/rule_y に在れば単一線でも「塞げない」）。
-_SINGLE_LINE_HARD_SUPPLY: tuple[str, ...] = ("不穏な噂", "黒猫")
 #: soft脅威の許容上限。★経験則（母数200で防衛失敗の誤検出ゼロを確認した閾値）。
 #   ★再検証トリガー＝キャラプール変更・コーパス再生成・loop_race のパス述語変更のいずれかで
 #   この閾値と _SINGLE_LINE_* を再走査すること（random_BTX#7 型の fb_loss 誤検出が復活しうる）。
@@ -297,6 +302,135 @@ class SingleLineReport:
     no_win_line: bool
     backbone: frozenset[str]
     reason: str
+
+
+# ---------------------------------------------------------------------------
+# B-46b'：役職効果の勝ち筋（ラバーズ対／フレンド除去）＝単線検出器の盲点是正
+#   出典＝`docs/監査_mm再検死_2026-07-27.md` §1c/§1d/§3a・§4 チケット4。
+#   旧検出器は **盤面（ボード）の暗躍供給レートしか数えていない**ため、btx_bomb帯を
+#   「単線＝暗躍禁止1枚/ターンで完封できる」と判定していた。実際には役職効果の線が実在し、
+#   A-67（`agents/heuristic.py` の path_costs）でmm側に実装したところ 3日L1が14→4 になった
+#   ＝脚本は易しくなかった＝**検出器側の設計欠落**だった。ここでその2本を数える。
+#
+# ★A-67 との関係（二重定義を避ける努力と、その限界＝正直に）：
+#   A-67 の `path_costs` は `HeuristicMastermind` の意思決定メソッド内部のローカル変数で、
+#   (a) 実行時の `view` dict（自陣の観測・history・belief）と (b) `self.p`（掃引可能な
+#   MM_PARAMS）と (c) `reachable_culprits`（不安レースの実測）に依存する。一方こちらは
+#   **静的な Script/GameState だけを入力に取る検出器**（生成品質の門番）＝入力の層が違う。
+#   共通化するには heuristic 側の当該ブロックを関数抽出して両者から呼ぶ必要があるが、
+#   `agents/heuristic.py` は A レーンの担当ファイルで、かつ抽出はベンチの bit 不変性を
+#   賭ける改造になる（本チケットは「両ベンチ bit 不変」が前提）。よって**今回は再利用せず、
+#   A-67 と同じ KB 条文・同じ限定（下記 _ROLE_EFFECT_*）を明示して写像する**。
+#   ★申し送り＝path_costs の関数抽出（heuristic と本モジュールの単一ソース化）は
+#   A レーン側のリファクタとして別チケット化するのが正しい。
+# ---------------------------------------------------------------------------
+
+#: 役職効果パスが使う「殺害手段」＝遠隔殺人（暗躍2以上のキャラから1人を死亡＝KB: 40 事件表）。
+#   ★A-67 と同じ限定：殺人事件（同席）・シリアルキラー（2人きり）・病院の事件は
+#   「移動1手で安く見えるが主人公の防御語彙が最も厚い」経路＝戦略パスには数えない
+#   （A-67 のコメント＝B-71配達ピン/B-76退避/B-81昇格。病院はボード線で既に会計済み）。
+_ROLE_EFFECT_KILL_INCIDENT: str = "遠隔殺人"
+#: 遠隔殺人の的にするのに要る暗躍カウンター数（KB: 40 事件表「暗躍カウンターが2つ以上」）。
+_ROLE_EFFECT_KILL_ANYAKU: int = 2
+#: メインラバーズの主人公殺害に要る暗躍（KB: 50:160＝不安3以上かつ暗躍1以上）。
+_ROLE_EFFECT_ML_ANYAKU: int = 1
+#: ラバーズ対の片割れ死亡で相方に乗る不安（KB: 50:153,159＝【強制】不安カウンターを6つ）。
+_ROLE_EFFECT_ML_UNREST: int = 3
+
+
+def role_effect_paths(state) -> list:
+    """役職効果の勝ち筋（lovers＝ラバーズ対／friend＝フレンド除去）を PathRace で返す。
+
+    ★`sim/loop_race.analyze_loop` には**足さない**（＝そちらは `sim/generator` の
+      リジェクト判定に直結していて、足すと生成コーパスが変わる＝再ベースライン扱いになる。
+      本チケットは検出のみ・生成不変が前提）。単線検出器がここを呼ぶ。
+
+    ①lovers（KB: 50:153,159,160）：メインラバーズは「不安3以上かつ暗躍1以上」で
+      ターン終了フェイズに主人公を殺害できる。相方のラバーズが死亡すると【強制】で
+      不安が6つ乗る＝**不安レース（mm正味+1/日・監査§1d）を丸ごと迂回する**。
+      ∴ ラバーズを殺せる経路があれば「不安-1で毎ターン冷やす」では防げない
+      ＝ボード線とは独立に暗躍禁止を要求する線になる（＝softではない）。
+    ②friend（KB: 40:130）：フレンドがループ終了時に死亡していれば主人公は敗北。
+      殺害経路（遠隔殺人の的づくり＝暗躍2）があれば独立した線。
+
+    どちらも「的づくりの暗躍」はカード由来＝主人公は暗躍禁止で止められる
+    ＝needs_kinshi=True（＝暗躍禁止1枚/ターンの枠を食い合う＝二正面の当事者）。
+    """
+    from engine.data import ROLE_CLAUSE_ABILITY
+
+    from .loop_race import CONTESTED, HARD, PathRace
+
+    out: list = []
+    days_left = max(0, state.script.days_per_loop - state.day + 1)
+    supply = days_left * 2      # 脚本家のカード枚数≒2/ターン（A-67 の残供給会計と同じ）
+
+    # 殺害手段＝今ループこれから発火しうる遠隔殺人（不安会計で「困難」でないもの）。
+    #   発火可能性の門番は incident_feasibility に一本化する（勝ち筋の他の事件系と同じ作法）。
+    remote = None
+    for f in incident_feasibility(state.script):
+        if f.name != _ROLE_EFFECT_KILL_INCIDENT or f.grade == "困難" or f.day < state.day:
+            continue
+        cu = state.characters.get(f.culprit)
+        if cu and cu.alive and cu.on_board:
+            remote = f
+            break
+    if remote is None:
+        return out
+
+    def _kill_cost(name: str) -> int | None:
+        """name を今ループ遠隔殺人の的にするのに要る暗躍の個数。不能は None。"""
+        c = state.characters.get(name)
+        if not (c and c.alive and c.on_board):
+            return None
+        if ROLE_CLAUSE_ABILITY.get(c.role) == "不死":
+            return None          # 不死は殺害不成立（KB: 00/50 記法・60: A26）
+        return max(0, _ROLE_EFFECT_KILL_ANYAKU - c.anyaku)
+
+    def _grade(cost: int) -> str:
+        return CONTESTED if cost <= supply else HARD
+
+    _inc = f"{remote.day}日目 {remote.name}（犯人{remote.culprit}・{remote.grade}）"
+
+    # ①lovers＝ラバーズ対（KB: 50:153,159 → 50:160）
+    ml = next((n for n, c in state.characters.items()
+               if c.role == "メインラバーズ" and c.alive and c.on_board), None)
+    if ml:
+        mc = state.characters[ml]
+        need_an = max(0, _ROLE_EFFECT_ML_ANYAKU - mc.anyaku)
+        if mc.unrest >= _ROLE_EFFECT_ML_UNREST:
+            cost, via = need_an, "メインラバーズの不安は既に臨界（3以上）"
+        else:
+            lovers = sorted(
+                (kc, n) for n, kc in
+                ((n, _kill_cost(n)) for n, c in state.characters.items()
+                 if c.role == "ラバーズ")
+                if kc is not None)
+            cost, via = (None, "")
+            if lovers:
+                cost = lovers[0][0] + need_an
+                via = (f"ラバーズ〈{lovers[0][1]}〉を{_inc}の的（暗躍2）にして殺害＝"
+                       "相方に不安+6が【強制】で乗る（KB: 50:153,159）＝不安レースを迂回")
+        if cost is not None:
+            out.append(PathRace(
+                "lovers", _grade(cost), True,
+                f"メインラバーズ〈{ml}〉の主人公殺害（不安3以上＋暗躍1以上・KB: 50:160）："
+                f"{via}。必要な暗躍 計{cost}個／残供給{supply}"
+                f"（現在 不安{mc.unrest}/暗躍{mc.anyaku}）。",
+                source="lovers"))
+
+    # ②friend＝フレンド除去（KB: 40:130）。最も安い1人で足りる＝その1人だけを的にする。
+    _fk = sorted((kc, n) for n, kc in
+                 ((n, _kill_cost(n)) for n, c in state.characters.items()
+                  if c.role == "フレンド")
+                 if kc is not None)
+    if _fk:
+        cost, who = _fk[0]
+        out.append(PathRace(
+            "friend", _grade(cost), True,
+            f"フレンド〈{who}〉はループ終了時に死亡していれば主人公敗北（KB: 40:130）："
+            f"{_inc}の的（暗躍2）にすれば除去できる。必要な暗躍 計{cost}個／残供給{supply}。",
+            source="friend"))
+    return out
 
 
 def single_line_report(script) -> SingleLineReport:
@@ -313,22 +447,188 @@ def single_line_report(script) -> SingleLineReport:
     st.prepare_loop(dyn)
     rep = analyze_loop(st)
     active = [p for p in rep.paths if p.grade != HARD]
-    if not active:
+    # ★B-46b'（2026-07-27・監査_mm再検死 §1c）：役職効果の線（ラバーズ対／フレンド除去）を
+    #   別枠で数える。loop_race.analyze_loop には足さない＝そちらは generator のリジェクト
+    #   判定に直結し、足すと生成コーパスが変わる（＝再ベースライン扱い・本チケットの範囲外）。
+    role_active = [p for p in role_effect_paths(st) if p.grade != HARD]
+    if not active and not role_active:
         return SingleLineReport(False, True, frozenset(),
                                 "mmに残り日数で臨界に届く勝ち筋が無い（別カテゴリ）。")
     backbone = frozenset(p.key for p in active) - _SINGLE_LINE_SOFT
     if len(backbone) != 1 or not backbone <= _SINGLE_LINE_BACKBONE_OK:
-        return SingleLineReport(False, False, backbone,
-                                f"backbone={set(backbone) or '∅'}＝単一の塞げるボード線でない。")
-    text = (getattr(script, "rule_x", "") or "") + (script.rule_y or "")
-    if any(h in text for h in _SINGLE_LINE_HARD_SUPPLY):
-        return SingleLineReport(False, False, backbone,
-                                "暗躍禁止で止まらない供給（不穏な噂/黒猫）がある＝単一線でも塞げない。")
+        _extra = ("／".join(p.key for p in role_active))
+        return SingleLineReport(
+            False, False, backbone | frozenset(p.key for p in role_active),
+            f"backbone={set(backbone) or '∅'}＝単一の塞げるボード線でない。"
+            + (f" 加えて役職効果の線（{_extra}）が立つ。" if role_active else ""))
+    # ★B-46b（監査_L1事故検死_2026-07-27 §3d＝永久不発バグ2点の修正）：
+    #   旧実装は rule_x + rule_y の文字列連結に "不穏な噂"/"黒猫" を探していた＝
+    #   (1) rule_x2（BTXの2枚目ルールX）を見ない＝btx_bomb（恋愛風景＋噂が rule_x2）の噂を
+    #       取り落とし、誤った理由で陽性を返していた → script.rule_xs で全ルールXを見る。
+    #   (2) 黒猫は「キャラ」＝ルール名文字列には決して現れない＝黒猫分岐は永久不発
+    #       → script.cast で見る。黒猫の供給はループ開始時に神社へ暗躍+1（強制・KB: 30/60）
+    #       ＝ゴール盤が神社の時のみ有効。
+    #   どちらも**ボード供給**（噂=任意ボードに+1・1/loop）＝backbone が board 線の時のみ
+    #   「塞げない」に効く（kp_anyaku＝キャラ暗躍にはボード供給は届かない）。
+    #   ※供給レート×閾値2の会計（監査§3d③＝噂1/L単独では臨界2に届かない＝実は塞げる・
+    #     btx_bomb実測）は拡張＝B-46bのスコープ外。現状は保守側＝供給が在れば「塞げない」。
+    if backbone == frozenset({"board"}):
+        goal_boards = {p.source.split(":", 1)[1] for p in active
+                       if p.key == "board" and p.source.startswith("board:")}
+        if "不穏な噂" in script.rule_xs:
+            return SingleLineReport(False, False, backbone,
+                                    "暗躍禁止で止まらない供給（不穏な噂＝任意ボードに+1・1/loop）"
+                                    "がある＝単一線でも塞げない。")
+        if "黒猫" in script.cast and "神社" in goal_boards:
+            return SingleLineReport(False, False, backbone,
+                                    "暗躍禁止で止まらない供給（黒猫＝ループ開始時に神社へ暗躍+1）"
+                                    "がゴール盤・神社に刺さる＝単一線でも塞げない。")
+    # ★B-46b'：役職効果の線はボード線と**独立に暗躍禁止を要求する**（的づくりの暗躍は
+    #   カード由来＝暗躍禁止で止まるが、1枚/ターンではボードと両方は塞げない）＝二正面。
+    #   ラバーズ対は不安+6が【強制】で乗る＝「不安-1で毎ターン冷やす」soft対処も効かない
+    #   （監査§1d の算術＝mm正味+1/日のレースを迂回する）。∴単線ではない。
+    if role_active:
+        return SingleLineReport(
+            False, False, backbone | frozenset(p.key for p in role_active),
+            f"単一ボード線（{set(backbone)}）に加えて役職効果の勝ち筋が立つ＝"
+            "暗躍禁止1枚/ターンでは両方を塞げない：" + "／".join(p.note for p in role_active))
     if len(active) > _SINGLE_LINE_MAX_ACTIVE:
         return SingleLineReport(False, False, backbone,
                                 f"soft脅威が積む（active={len(active)}）＝二者択一を強制しうる。")
     return SingleLineReport(True, False, backbone,
                             f"単線＝{set(backbone)} を暗躍禁止で塞げば脚本家は勝てない。")
+
+
+# ---------------------------------------------------------------------------
+# B-62：供給到達性検査（監査_L1事故検死_2026-07-27 §3c・検出のみ）
+#   FS s13＝KP幻想（被セット不可）×クロマク女の子（学校固定）＝killer_kp の供給路が
+#   **物理的に不在**の脚本が生成されていた（新種の脚本欠陥）。勝ち筋役職の
+#   「担い手が実行可能か」（供給路・合流可能性）を静的に検査する。
+#   ★観測系＝generator のリジェクトには未接続（生成が変わる＝再ベースライン枠・
+#     投入時期は FableA 統制。ここは検出とレポートのみ）。
+#   ★B-46b'（2026-07-27）：E-1（幻想はボードの暗躍も受ける＝両方に乗る）に合わせて供給路の
+#     前提を是正した。現行ルールでは**暗躍供給が物理不在になるケースは無い**＝上記 FS s13 の
+#     「供給路が物理不在」は過剰検出だった。残る検出は killer_meet（キラーとKPが禁止エリアで
+#     合流できない）だけ。詳細と KB 条文＝_char_anyaku_supply の docstring。
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SupplyReachabilityIssue:
+    group: str    # 影響する勝ち筋グループ（win_path_groups のキー）
+    route: str    # 供給路の識別（killer_kp / killer4 / killer_meet / kp_anyaku）
+    target: str   # 供給先（または合流不能の相手）キャラ名
+    fatal: bool   # そのグループの勝ち筋が丸ごと物理不在になるか
+    reason: str
+
+
+def _static_reach_areas(name: str) -> frozenset[str]:
+    """キャラが立ち得るエリアの静的近似（脚本家が自力で実現できる範囲）。
+
+    ★幻想＝行動カード被セット不可（KB: 30）＝移動カードを直接当てられない。ボード経由の
+      読み替え移動（幻想のいるボードの移動カードを幻想が受ける）は、主人公が同一ボード枠で
+      相殺・対抗でき恒常手段にならない＝**初期エリア固定として扱う**（監査§3c の扱いを踏襲）。
+    ★それ以外＝全エリア−禁止エリア。動的な禁止解除（女の子=友好1／入院患者=医者能力3）は
+      主人公側の協力（友好カウンター）が前提＝脚本家は自力で解けない＝静的禁止で判定する。
+    """
+    from engine.board import AREAS
+    from engine.data import forbidden_of, initial_area_of
+    if name == "幻想":
+        ini = initial_area_of(name)
+        return frozenset({ini}) if ini else frozenset(AREAS)
+    return frozenset(AREAS) - forbidden_of(name)
+
+
+def _char_anyaku_supply(roles: dict, target: str) -> tuple[bool, str]:
+    """キャラ `target` の暗躍カウンターへ脚本家が供給できるか（静的・KB接地）。
+
+    供給源＝
+    (1) 暗躍カードの直接セット（幻想だけは被セット不可＝KB: `rules/30_characters.md:55`
+        「行動カード被セット不可」）。
+    (2) ★**幻想はボード経由で受け取る**＝KB: `rules/30_characters.md:55`「同エリアのボードの
+        カード効果を受ける」＋`rules/10_action_cards.md:67-71`「ボードには暗躍カウンターのみ
+        置かれる／ボードにセットして実際に解決されるのは 脚本家＝暗躍+1・暗躍+2 のみ」。
+        **E-1（ユーザー裁定 2026-07-27＝原本保持者による確定・`docs/確定ルール集_KB検証済み.md`
+        「幻想の特性」）**：幻想のエリアのボードに置かれた暗躍+1/+2は**ボードと幻想の両方に乗る**
+        （置き換えではなく効果の複製）。engine 側は `engine/resolver.py` で実装済み。
+        幻想の初期エリアは神社で固定だが、脚本家はその**神社のボードへ暗躍を置くだけ**で
+        幻想のキャラ暗躍を運べる＝供給路は常に存在する。
+    (3) クロマク能力（脚本家能力フェイズ・同エリアのキャラへ+1）。
+
+    ∴ **現行ルールでは「キャラ暗躍の供給路が物理的に不在」になるケースは無い**（常に True）。
+    ★B-46b'（2026-07-27）でここを是正した：旧実装は「暗躍はボードに残る＝幻想へ届かない」
+      という E-1 以前の（そして誤りだった）前提で、幻想＝キーパーソンの脚本を
+      「供給到達性ゼロ＝fatal」と**過剰検出**していた（前任者は docstring に ⚠ を残しつつ
+      判定変更を保留）。※ `roles` は将来のルール変更で供給源の列挙に戻せるよう残す。
+    """
+    if target != "幻想":
+        return True, "暗躍カードを直接セット可"
+    return True, ("幻想は行動カード被セット不可（KB: 30:55）だが、同エリアのボードに置かれた"
+                  "暗躍+1/+2は**ボードと幻想の両方に乗る**（E-1・KB: 30:55＋10:67-71）"
+                  "＝ボード経由で供給可")
+
+
+def supply_reachability_issues(script) -> list[SupplyReachabilityIssue]:
+    """勝ち筋役職の担い手が物理的に実行可能かを検査する（検出のみ・advisory）。
+
+    対象＝キャラ暗躍を臨界へ運ぶ必要がある勝ち筋（killer_kp＝KP暗躍2＋同エリア／
+    killer4＝キラー自暗躍4／kp_anyaku＝僕と契約のKP暗躍2）。ボード線（board）は
+    ボードへのカードセットが常に可能＝物理不在にならないため対象外。
+    """
+    roles = {n: script.role_of(n) for n in script.cast}
+    groups = win_path_groups(script)
+    kps = [n for n, r in roles.items() if r == "キーパーソン"]
+    killers = [n for n, r in roles.items() if r == "キラー"]
+    issues: list[SupplyReachabilityIssue] = []
+
+    # (1) killer グループ（KP存在時のみ検査＝ファクターのKP化は静的に追わない）
+    #   ルートは2本：killer_kp＝KP暗躍2＋同エリア（供給と合流の両方が要る）／
+    #   killer4＝キラー自暗躍4（同エリア不要）。両方物理不在＝グループ丸ごと fatal。
+    if "killer" in groups and killers and kps:
+        killer4_ok = any(_char_anyaku_supply(roles, k)[0] for k in killers)
+        kp_route_ok = False
+        dead: list[tuple[str, str, str]] = []   # (route, target, reason)
+        for kp in kps:
+            ok_supply, why = _char_anyaku_supply(roles, kp)
+            meet = any(_static_reach_areas(k) & _static_reach_areas(kp) for k in killers)
+            if ok_supply and meet:
+                kp_route_ok = True
+                continue
+            if not ok_supply:
+                dead.append(("killer_kp", kp, f"KP〈{kp}〉暗躍2への供給路が物理不在＝{why}"))
+            if not meet:
+                dead.append(("killer_meet", kp,
+                             f"キラーがKP〈{kp}〉と同エリアになれない（禁止エリアで合流不能）"))
+        if not killer4_ok:
+            k = killers[0]
+            dead.append(("killer4", k,
+                         f"キラー〈{k}〉自身の暗躍4への供給路が物理不在＝"
+                         f"{_char_anyaku_supply(roles, k)[1]}"))
+        fatal = not kp_route_ok and not killer4_ok
+        for route, target, why_txt in dead:
+            suffix = "" if fatal else (
+                "（残るは自暗躍4＝killer4 の高コスト線のみ）"
+                if not kp_route_ok and killer4_ok and route != "killer4" else "")
+            issues.append(SupplyReachabilityIssue("killer", route, target, fatal,
+                                                  why_txt + suffix))
+
+    # (2) kp_anyaku（僕と契約しようよ！＝KP暗躍2）：供給不在＝グループ丸ごと物理不在
+    if "kp_anyaku" in groups:
+        for kp in kps:
+            ok_supply, why = _char_anyaku_supply(roles, kp)
+            if not ok_supply:
+                issues.append(SupplyReachabilityIssue(
+                    "kp_anyaku", "kp_anyaku", kp, True,
+                    f"KP〈{kp}〉暗躍2への供給路が物理不在＝{why}"))
+    return issues
+
+
+def supply_reachability_lines(script) -> list[str]:
+    """供給到達性の検査結果を人間向け1行に（評価器・レポート用）。問題なしは空リスト。"""
+    out = []
+    for i in supply_reachability_issues(script):
+        icon = "🔴" if i.fatal else "⚠"
+        out.append(f"{icon} 供給到達性：勝ち筋[{i.group}/{i.route}]＝{i.reason}")
+    return out
 
 
 # ---------------------------------------------------------------------------

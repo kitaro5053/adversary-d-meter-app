@@ -92,6 +92,10 @@ def mastermind_view(state: GameState) -> dict:
     view["rule_x"] = state.script.rule_x
     view["rule_x2"] = state.script.rule_x2  # BTXの2枚目（脚本家は自分の脚本を知っている）
     view["rule_y_board_x"] = state.rule_y_board_x
+    # ★A-73：不穏な噂（任意ボードに暗躍+1・1/loop＝KB 40:61 / 50:75）の消費済みフラグ。
+    #   脚本家は自分のルールXと自分が使ったかどうかを当然知っている＝秘匿情報ではない
+    #   （主人公ビューには載せない）。実効供給の会計（agents/heuristic の `_supply_of`）が使う。
+    view["rumor_used"] = state.rumor_used
     view["roles"] = {n: state.script.role_of(n) for n in state.script.cast}
     # ★B-50 段階C（ユーザー正典 2026-07-24）：登場が遅れるキャラの**登場日／登場ループ**は
     #   脚本家に最初から明示される（脚本家は自分の脚本を知っている）。転校生＝登場日・

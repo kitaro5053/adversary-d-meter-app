@@ -206,7 +206,8 @@ LOSS_NODES = {
     },
     "kp.sk": {
         "label": "SK（配役 or ウイルスSK化）がKPを殺す", "difficulty": "中", "kb": "40",
-        "gate": {"roles_any": ["シリアルキラー"], "or_rule_x": ["妄想拡大ウイルス"]},
+        "gate": {"roles_any": ["シリアルキラー"], "or_rule_x": ["妄想拡大ウイルス"],
+                 "roles_vip": ["キーパーソン", "ファクター"]},
         "conds": [
             {"id": "sk_exists", "label": "SKが存在する（→SK供給源）", "defenses": [], "refs": ["SK"]},
             {"id": "pair", "label": "KPとSKが『2人きり』（同エリアに他1人だけ）",
@@ -247,7 +248,7 @@ LOSS_NODES = {
     },
     "kp.incident_murder": {
         "label": "殺人事件がKPを殺す", "difficulty": "中", "kb": "40",
-        "gate": {"incidents": ["殺人事件"]},
+        "gate": {"incidents": ["殺人事件"], "roles_vip": ["キーパーソン", "ファクター"]},
         "conds": [
             {"id": "culprit_alive", "label": "犯人が生存", "defenses": [], "refs": ["REMOVAL"]},
             {"id": "culprit_critical", "label": "犯人が不安臨界以上（→§Bで臨界到達を防ぐ）",
@@ -260,7 +261,7 @@ LOSS_NODES = {
     },
     "kp.incident_remote": {
         "label": "遠隔殺人がKPを殺す", "difficulty": "中", "kb": "50",
-        "gate": {"incidents": ["遠隔殺人"]},
+        "gate": {"incidents": ["遠隔殺人"], "roles_vip": ["キーパーソン", "ファクター"]},
         "conds": [
             {"id": "culprit_live_critical", "label": "犯人が生存（→排除）＋不安臨界以上（→§B）",
              "defenses": [_tesaki()], "refs": ["UNREST", "REMOVAL"]},
@@ -270,7 +271,7 @@ LOSS_NODES = {
     },
     "kp.incident_hospital": {
         "label": "病院の事件がKPを殺す", "difficulty": "中", "kb": "FS/BTX",
-        "gate": {"incidents": ["病院の事件"]},
+        "gate": {"incidents": ["病院の事件"], "roles_vip": ["キーパーソン", "ファクター"]},
         "conds": [
             {"id": "culprit_live_critical", "label": "犯人が生存（→排除）＋不安臨界以上（→§B）",
              "defenses": [_tesaki()], "refs": ["UNREST", "REMOVAL"]},
@@ -436,8 +437,13 @@ SUPPLY_SOURCES = {
     "sup.incident_board": {
         "label": "事件（ボード暗躍）：邪気の汚染＝神社に+2（50:199）／行方不明＝犯人の移動先ボードに+1（40:153）",
         "difficulty": "中",
-        "defense": "犯人の臨界到達を防ぐ＝発生阻止（→UNREST・手先配役なら『自身犯の事件を不発に』♡3）",
-        "na": "暗躍禁止では止まらない（事件は行動解決フェイズ外）", "kb": "50:199/40:153"},
+        "defense": "犯人の臨界到達を防ぐ＝発生阻止（→UNREST・手先配役なら『自身犯の事件を不発に』♡3）"
+                   "／★行方不明は**犯人の禁止エリアの板へは供給できない**（E-2 公式裁定 2026-07-29・"
+                   "KB: 00 禁止エリアの定義／40 事件まわりの注意）＝的の板が犯人の禁止エリアなら"
+                   "この経路はそもそも成立しない（例：犯人サラリーマン〈禁止＝学校〉× 守るべき場所）",
+        "na": "暗躍禁止では止まらない（事件は行動解決フェイズ外）。"
+              "★邪気の汚染は神社固定＝犯人の位置・禁止エリアと無関係（移動を伴わない）",
+        "kb": "50:199/40:153"},
     "sup.incident_char": {
         "label": "事件（キャラ暗躍）：不安拡大＝任意の**キャラ1人**に暗躍+1（＋別の任意キャラに不安+2・40:149）"
                  "＝**ボードでなくキャラに付く**（ユーザーレビュー第7回で明記）",
@@ -606,6 +612,8 @@ def script_possible(node_id: str, *, roles: set[str], incidents: set[str],
         any_rule = any(r in rule_x for r in g.get("or_rule_x", []))
         if not (any_role or any_rule):
             return False
+    if "roles_vip" in g and not any(r in roles for r in g["roles_vip"]):
+        return False
     if "incidents" in g and not all(i in incidents for i in g["incidents"]):
         return False
     if "incidents_any" in g and not any(i in incidents for i in g["incidents_any"]):

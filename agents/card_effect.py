@@ -40,6 +40,12 @@ MOVE_TOGGLE: dict[str, tuple[int, int]] = {"移動←→": (1, 0), "移動↑↓
 NOOP_SCORE: float = 3.5        # 証明可能な空振り（no-op）
 KP_ZONE_SCORE: float = 2.0     # KPを致死事件の kill zone へ送る（自滅・大減点）
 SUICIDE_SCORE: float = -100.0  # 自滅回避（PRIORITY["自滅回避"] と同値）
+# ★B-86'：友好+ が**無駄ではなく有害**な席（＝相手に弾を渡す）。空振り(3.5)より下に置く。
+GW_ARMS_MM_SCORE: float = 2.0  # 医者×友好無視×友好2＝脚本家能力フェイズの不安+1を解禁
+# ★B-109：最終日の友好+ が**因果の糸で有害**な席（友好0→1にするとループ終了時に
+#   「友好が置かれていた」が成立し、次ループ開始時にそのキャラへ不安+2＝`rules/50:85`）。
+#   値は GW_ARMS_MM_SCORE と同一＝**新しいマジックナンバーを増やさない**。
+GW_END_HARM_SCORE: float = GW_ARMS_MM_SCORE
 
 
 @dataclass(frozen=True)
@@ -48,6 +54,9 @@ class NoopCtx:
 
     mm_chars ＝ mmが今ターン札を伏せたキャラ（**位置は公開**・中身は伏せ）。
     kill_zone ＝ 今日の致死事件のゾーン（例：病院の事件＝"病院"）。無ければ None。
+    mm_boards ＝ mmが今ターン札を伏せた**ボード**（同じく位置だけ公開）。
+      ★既定 **None＝「材料が無い＝判定不能」**（`frozenset()` は「1枚も置いていない」の意）。
+      None のとき G7（板の空振り判定）は None を返す＝健全側＝**既存の呼び出し側の挙動は不変**。
     """
 
     mm_chars: frozenset = frozenset()
@@ -56,6 +65,19 @@ class NoopCtx:
     kuromaku_suspects: frozenset = frozenset()
     killer_suspects: frozenset = frozenset()
     friend_guards: frozenset = frozenset()
+    mm_boards: frozenset | None = None
+    # ★B-86'（G8＝友好+ の空振り／有害）の材料。**すべて既定は空**＝材料が無い＝
+    #   G8 は何も判定しない＝**既存の呼び出し側（defense_plan 等）の挙動は完全に不変**。
+    gw_keep: frozenset = frozenset()            # 切ってはいけない対象（TT の可能性＝rules/50:127-128）
+    gw_refused: frozenset = frozenset()         # 拒否を観測した＝友好無視保持の証明（rules/20:24）
+    gw_ignore_certain: frozenset = frozenset()  # 友好無視を持つ配役が確定的
+    gw_info_exhausted: frozenset = frozenset()  # 自身開示しか持たず、その役職は既知
+    gw_arms_mm: frozenset = frozenset()         # 友好2で脚本家に弾を渡す（医者・rules/60:81 B-8）
+    # ★B-109（G9/G10＝「このターン何も変えない手」）の材料。**すべて既定は空**＝材料が無い＝
+    #   何も判定しない＝**既存の呼び出し側（defense_plan 等）の挙動は完全に不変**。
+    gw_final_void: frozenset = frozenset()      # (キャラ, step) ＝最終日に置いても新規解禁が無い
+    gw_final_harm: frozenset = frozenset()      # 上のうち因果の糸で有害になるキャラ（友好0のとき）
+    unrest_void: frozenset = frozenset()        # 不安-1 が算術的にゼロなキャラ（残り事件0 等）
 
 
 @dataclass(frozen=True)
@@ -108,8 +130,84 @@ def noop_reason(view: dict, card: str, target: str, target_kind: str,
       G1 暗躍禁止→キャラ・mm札なし ／ G2 不安-1→不安0・mm札なし ／ G3 移動禁止→移動不能 ／
       G4 移動→行き先が禁止（不成立） ／ G5 移動→KPを致死zoneへ ／ G6 移動→クロマク送り込み。
     plan 側への接続（G1/G2/G4/G5/G6 の穴埋め）は Step 1 以降＝段階land（B-28 §4）。
+    ★B-103（2026-07-30）で **G7＝板への暗躍禁止の空振り** を追加（`ctx.mm_boards` が必要。
+      未指定＝None なら従来どおり None を返す＝呼び出し側の挙動は不変）。
     """
+    # --- G7：暗躍禁止は「そのボードに載った今ターンの暗躍+」しか打ち消せない -------------
+    # ★G1（キャラ版）とまったく同じ KB 帰結の**ボード版**。B-28 の単一チョークポイントは
+    #   `target_kind != "character"` で早期 return していたため、板だけこの述語を持たず、
+    #   `heuristic_protagonist._base_score` が void な板へ 80+暗躍 を出し続けていた
+    #   （手練れユーザーが2度指摘した疑問手＝B-103）。
+    # ルール接地：
+    #   - 暗躍禁止が無効化するのは「**重なった**暗躍+1/+2」だけ（`rules/10:61`）＝
+    #     既にボードに載っているカウンターは除去しない。
+    #   - 暗躍禁止は**行動解決フェイズでのみ**有効（`rules/10:65`）＝クロマク・不穏な噂
+    #     （`rules/40:62,88`・`rules/60:105 C-5`）・黒猫のループ開始時 神社+1（`rules/30:75`）・
+    #     事件由来の暗躍は**どれも止まらない**。
+    #   - 主人公は脚本家の**セット位置を見てから**置く（`rules/00:105-106`）＝void の判定は
+    #     推定ではなく**公開情報からの確定**。
+    #   ∴ mm が今ターンその板に札を1枚も置いていない＝打ち消せる暗躍+が存在しない＝
+    #     **算術的にゼロ**（賭けの要素すら無い）。
+    if target_kind == "board" and card == "暗躍禁止" and ctx.mm_boards is not None:
+        if target not in ctx.mm_boards:
+            return Noop("mm板札なし＝今ターン打ち消す暗躍+が無い（空振り）", NOOP_SCORE)
+        return None
     if target_kind != "character":
+        return None
+
+    # --- G8：友好+ の空振り／有害（B-86'・手練れユーザーが2度指摘した無駄打ち）------------
+    # ルール接地（`rules/` から一意に読める部分だけを使う）：
+    #   - 友好能力は「記載されたマーク（ハート）の個数**以上**の友好」で使える（`rules/20:20`）
+    #     ＝友好+ の価値は「次の閾値へ到達させて能力を実際に使えるようにすること」にある。
+    #   - 拒否できるのは**能力を使うキャラ**が友好無視／絶対友好無視を持つ場合のみ
+    #     （`rules/20:24`・`rules/00:173-174`）。★強さの区別：
+    #       **絶対**友好無視＝【強制】必ず拒否＝**規則上ゼロが保証される**。
+    #       通常の友好無視＝【任意】＝拒否は脚本家の選択＝厳密には規則上ゼロではなく
+    #       「**有能な相手なら必ず拒否するので実質ゼロ**」。
+    #     ∴ どちらを集合に入れるかは**呼び出し側の閾値**で決める（本述語は集合を信じる）。
+    #   - 配役は**ゲーム中固定**（非公開シート＝`rules/00:76`）＝「拒否された」「役職が開示された」は
+    #     **永続的な事実**＝以後の全ループで有効。
+    #   - ★例外＝タイムトラベラー（`rules/50:127-128`）＝最終日のターン終了フェイズに友好2以下だと
+    #     任意敗北を宣言されうる＝**友好3以上は敗北条件の封じ手**。∴ TT の可能性が残る対象は
+    #     `gw_keep` に入れて**絶対に切らない**（切ってよいのは将来にわたって価値ゼロのものだけ）。
+    #   - ★空撃ちの情報価値（`rules/20:25`＝絶対友好無視の判別に使える定番テク）を潰さないため、
+    #     **確定していない相手は集合に入れない**（呼び出し側の責務）。
+    if card in ("友好+1", "友好+2"):
+        if target in ctx.gw_keep:
+            return None
+        c = _alive(view, target)
+        step = 2 if card == "友好+2" else 1
+        # ★無駄ではなく**有害**：医者が友好無視を持つ場合、友好2以上で脚本家が
+        #   **脚本家能力フェイズ**に医者の能力（不安±1）を使えるようになる（`rules/60:81` B-8・
+        #   実カード表記＝`rules/20:230-232`「友好無視を持ち、かつ友好2以上」）。
+        #   ＝主人公が自分で相手に供給源を渡す手。標準では**医者だけ**（軍人・教師は不可）。
+        if target in ctx.gw_arms_mm and c is not None \
+                and (c.get("goodwill", 0) or 0) + step >= 2:
+            return Noop("医者×友好無視＝友好2で脚本家能力フェイズの不安+1を解禁（有害）",
+                        GW_ARMS_MM_SCORE)
+        if target in ctx.gw_refused:
+            return Noop("拒否を観測＝友好無視保持が判明（配役は固定）＝以後も使えない",
+                        NOOP_SCORE)
+        if target in ctx.gw_ignore_certain:
+            return Noop("友好無視を持つ配役が確定＝友好能力は拒否される", NOOP_SCORE)
+        if target in ctx.gw_info_exhausted:
+            return Noop("自身開示済み＝この能力から得られる情報は既に持っている（空振り）",
+                        NOOP_SCORE)
+        # --- G9（B-109）：**最終日**に置いても新たに解禁される能力が無い友好+ -------------
+        # ルール接地：
+        #   - 友好カウンターの効果は「友好能力の使用可否」だけ（`rules/20:20`＝ハート数**以上**で
+        #     使用可・`rules/20:22`＝使っても減らない／1ループ1回の能力はそのループ1回のみ）。
+        #   - 友好能力を使うのは**主人公能力フェイズ**＝同じ日の行動解決フェイズの**後**。
+        #   - ループ開始時に**全カード・全ボードのカウンターを除去**（`rules/00:86`）。
+        #   ∴ 最終日に置いた友好は「その日の主人公能力フェイズで**新たに**使える能力」を
+        #      解禁しない限り、ループ終了で消える＝**算術的にゼロ**。
+        #   ★TT（`rules/50:127-128`）は `gw_keep` で既に上で除外済み＝ここには来ない。
+        if (target, step) in ctx.gw_final_void:
+            if target in ctx.gw_final_harm:
+                return Noop("最終日＋新規解禁なし＋因果の糸＝次ループに不安2を呼ぶ（有害）",
+                            GW_END_HARM_SCORE)
+            return Noop("最終日＋新規解禁なし＝ループ終了でカウンターごと消える（空振り）",
+                        NOOP_SCORE)
         return None
 
     # --- G1：暗躍禁止は「そのキャラに載った今ターンの暗躍+」しか打ち消せない ---
@@ -123,6 +221,18 @@ def noop_reason(view: dict, card: str, target: str, target_kind: str,
         c = _alive(view, target)
         if c and c.get("unrest", 0) == 0 and target not in ctx.mm_chars:
             return Noop("不安0＋mm札なし＝床0で空振り", NOOP_SCORE)
+        # --- G10（B-109）：不安を参照する帰結がこのループにもう存在しない -----------------
+        # ルール接地：
+        #   - 不安カウンターの効果は「事件の発生条件」だけ（`rules/00:30,38`＝不安臨界以上で
+        #     事件発生の条件／`rules/40:157`＝発生条件2つを両方満たすと必ず発生）。
+        #     FS の役職（`rules/40`）に不安の閾値を参照するものは**1つも無い**。
+        #     BTX だけが2つ例外を持つ＝妄想拡大ウイルス(X)（`rules/50:79-81`）と
+        #     メインラバーズ（`rules/50:159-160`）＝呼び出し側が集合から外す責務を持つ。
+        #   - ループ開始時に全カウンターを除去（`rules/00:86`）。
+        #   ∴ このループに残り事件が1件も無ければ、不安を1つ減らしても**算術的にゼロ**。
+        if target in ctx.unrest_void:
+            return Noop("このループに残り事件なし＋不安参照の役職/ルールなし＝空振り",
+                        NOOP_SCORE)
         return None
 
     # --- G3：移動禁止は「そのキャラに載った今ターンの移動カード」しか打ち消せない ---

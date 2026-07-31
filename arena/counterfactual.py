@@ -22,6 +22,8 @@ sim/mate.py（日単位の完全判定）との役割分担：
 CLI:
     PYTHONHASHSEED=0 python -m arena.counterfactual --set BTX --seed 4 --days 5 \
         --loop 4 --day 3            # L4D3の全応手を試す
+    PYTHONHASHSEED=0 python -m arena.counterfactual --sample btx_bomb --seed 0 \
+        --loop 1 --day 3            # 手書きサンプル脚本のCF裏取り（--set/--daysは脚本から）
 """
 
 from __future__ import annotations
@@ -186,13 +188,26 @@ def main(argv=None):
     ap.add_argument("--day", type=int, required=True)
     ap.add_argument("--two-days", action="store_true", help="2日連鎖の逸脱探索")
     ap.add_argument("--top-k", type=int, default=40)
+    # ★2026-07-28：手書きサンプル脚本のCF裏取りを1コマンドで回す（新era検死の申し送り）。
+    #   帯ごと負けている手書き脚本（btx_bomb/btx_seal/fs5_guard 等）の検証が主用途。
+    #   --seed は生成ではなく**エージェントのseed**として使う（サンプルは脚本が固定なので）。
+    ap.add_argument("--sample", type=str, default=None,
+                    help="手書きサンプル脚本名（例 btx_bomb）。指定時 --set/--days は脚本から取る")
     args = ap.parse_args(argv)
     if os.environ.get("PYTHONHASHSEED") is None:
         print("⚠ PYTHONHASHSEED=0 で実行してください。", file=sys.stderr)
     from sim import random_script
     from arena.postmortem import replay_with_snapshots, _mm_set_of
-    sc = random_script(args.set_name, args.seed,
-                       loops=(4 if args.days == 5 else 3), days=args.days)
+    if args.sample:
+        from sim.sample_scripts import SAMPLE_SCRIPTS
+        if args.sample not in SAMPLE_SCRIPTS:
+            print(f"未知のサンプル脚本: {args.sample}\n"
+                  f"利用可能: {', '.join(sorted(SAMPLE_SCRIPTS))}", file=sys.stderr)
+            return
+        sc = SAMPLE_SCRIPTS[args.sample]()
+    else:
+        sc = random_script(args.set_name, args.seed,
+                           loops=(4 if args.days == 5 else 3), days=args.days)
     state, log, snaps = replay_with_snapshots(sc, args.seed, loops=args.loops)
     snap = snaps.get((args.loop, args.day))
     if snap is None:

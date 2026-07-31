@@ -342,12 +342,24 @@ def _scholar_apply(state, user, target):
 
 # ---- 幻想：同エリアのキャラ1人を任意ボードへ移動／自身をこのループから除去 ----
 def _genso_move_targets(state, user):
+    """[脚]「選ばれたキャラを選ばれたボードに移動させる」（KB: 20 幻想・能力1）。
+
+    ★E-2（2026-07-29）：**対象キャラの禁止エリアは選べない**。行方不明（KB: 40:153／50）の
+      公式裁定＝「効果による移動でも禁止エリアへは移動できない」と**同じ条文型**
+      （「〜を〜ボードに移動させる」）なので同じ扱いにする。根拠＝禁止エリアの定義
+      「そのキャラが移動できないボード」（KB: 00）＝移動の出所を問わない。
+      ★行方不明の裁定そのものは公式回答（ユーザー確認）だが、**幻想への適用は同型からの
+        推論**＝原本での再確認が望ましい（監査doc §7 の要確認事項）。
+      ★このループの禁止解除（医者能力3・女の子能力1）は current_forbidden が反映する。
+    """
+    from .state import current_forbidden
     u = state.characters[user]
     out = []
     for n, c in state.characters.items():
         if c.alive and c.on_board and c.area == u.area:
+            forb = current_forbidden(state, n)
             for a in _AREAS:
-                if a != c.area:
+                if a != c.area and a not in forb:
                     out.append(f"{n}:{a}")
     return out
 

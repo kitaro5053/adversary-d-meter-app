@@ -5,12 +5,18 @@
 """
 
 from .gamelog import (
+    LOG_DOWNLOAD_MIME,
     game_to_jsonl,
     load_game,
     load_game_lines,
+    log_file_name,
+    log_position_key,
     save_game,
+    script_fingerprint,
     script_from_dict,
     script_to_dict,
+    stable_saved_at,
+    utc_saved_at,
 )
 from .insight import build_insight, loop_summaries
 from .interactive import PendingHuman, play_interactive
@@ -30,6 +36,13 @@ __all__ = [
     "save_game",
     "load_game",
     "load_game_lines",
+    "log_file_name",
+    "utc_saved_at",
+    # ★U-8：棋譜ダウンロードのURL失効対策（saved_at固定・mimeの単一ソース）
+    "LOG_DOWNLOAD_MIME",
+    "log_position_key",
+    "script_fingerprint",
+    "stable_saved_at",
     "script_to_dict",
     "script_from_dict",
     "ReplayAgent",

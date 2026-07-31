@@ -52,7 +52,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from engine.data import goodwill_abilities_of
+from engine.data import goodwill_abilities_of, rule_y_decisive_incident
+from engine.turn_end_rules import TT_DEFEAT_GOODWILL_MAX
 
 from .script_quality import incident_feasibility
 
@@ -361,31 +362,39 @@ def _tt_path(state, days_left: int) -> PathRace | None:
         return None
     tt = tts[0]
     g = state.characters[tt].goodwill
+    safe = TT_DEFEAT_GOODWILL_MAX + 1        # 友好3以上＝宣言不可（KB: 50:128）
     is_final = state.day >= state.script.days_per_loop
-    if is_final and g <= 2 and g + 2 < 3:  # 最終日・友好0＝この1ターンで3に届かない
-        return PathRace("tt", FORCED, False,
-                        f"タイムトラベラー〈{tt}〉は最終日・友好{g}＝この1ターンで友好3に"
+    if is_final and g <= TT_DEFEAT_GOODWILL_MAX and g + 2 < safe:
+        return PathRace("tt", FORCED, False,   # 最終日・友好0＝この1ターンで3に届かない
+                        f"タイムトラベラー〈{tt}〉は最終日・友好{g}＝この1ターンで友好{safe}に"
                         "届かず敗北宣言される。")
-    if g < 3:
+    if g < safe:
         return PathRace("tt", CONTESTED, False,
-                        f"タイムトラベラー〈{tt}〉は最終日に友好≤2で敗北宣言（現在友好{g}）。"
-                        "友好+（友好禁止は無視＝必ず通る）で3以上に保てば防げる。")
+                        f"タイムトラベラー〈{tt}〉は最終日に友好≤{TT_DEFEAT_GOODWILL_MAX}で"
+                        f"敗北宣言（現在友好{g}）。"
+                        f"友好+（友好禁止は無視＝必ず通る）で{safe}以上に保てば防げる。")
     return None  # 友好3以上＝宣言不可＝脅威ではない
 
 
 def _butterfly_path(state, days_left: int) -> PathRace | None:
-    """未来改変プラン×蝶の羽ばたき：発生で敗北条件成立。発生可否は incident_feasibility で会計。"""
-    if state.script.rule_y != "未来改変プラン":
+    """ルールYの「発生＝敗北」事件（未来改変プラン×蝶の羽ばたき。KB: 50:47）。
+
+    ★事件名とルールYの対応は engine.data.RULE_Y_INCIDENT_DEFEAT が単一ソース
+      （A-74＝mm側の勝ち筋列挙 agents/heuristic と同じ表を参照する＝二重定義の回避）。
+    発生可否は incident_feasibility で会計。
+    """
+    decisive = rule_y_decisive_incident(state.script.rule_y)
+    if not decisive:
         return None
     for f in incident_feasibility(state.script):
-        if f.name == "蝶の羽ばたき" and f.day >= state.day:
+        if f.name == decisive and f.day >= state.day:
             if f.grade == FORCED:
                 return PathRace("butterfly", FORCED, False,
-                                f"{f.day}日目 蝶の羽ばたき（犯人{f.culprit}）は確実に発生＝"
-                                "未来改変プランで敗北。")
+                                f"{f.day}日目 {decisive}（犯人{f.culprit}）は確実に発生＝"
+                                f"{state.script.rule_y}で敗北。")
             if f.grade == CONTESTED:
                 return PathRace("butterfly", CONTESTED, False,
-                                f"{f.day}日目 蝶の羽ばたき（犯人{f.culprit}）は放置で発生＝"
+                                f"{f.day}日目 {decisive}（犯人{f.culprit}）は放置で発生＝"
                                 "犯人を毎ターン冷やせば止まる。")
     return None
 

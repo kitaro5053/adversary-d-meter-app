@@ -1,7 +1,7 @@
 <!--
 惨劇RoopeR 5th 構造化ルールKB — 70: 脚本作成ガイド
-私的利用前提。原本（BakaFire『惨劇RoopeR 5th』脚本家の書）の自己使用複製として作成。
-第三者への頒布時はBakaFireの許諾が必要。
+原本（BakaFire Party『惨劇RoopeR 5th』脚本家の書）からの転載KB。
+BakaFire Party二次創作ガイドライン（https://bakafire.main.jp/rooper/sr_dl_04_sozai.htm）に基づき、出典明記のうえ転載（原作：BakaFire Party製『惨劇RoopeR』・非公式ファンメイド）。
 主な出典: 脚本家の書 p41-48（脚本作成ガイド／作り方の手順／タブー／CS・PP／キャラ評／配役・事件リスト／ループ回数見積もり／コラム）。
 凡例: 「★」= 注意点。「→NN」= NN番のKBファイルへ。「CS」=カバーストーリー、「PP」=パワープレイ。「BTX」=Basic Tragedy X、「FS」=First Steps。
         この文書は脚本家向けの設計指針。AIで回答する際は「個別脚本の真実（配役・犯人）」は明かさず、一般的な作成方法論として扱う。

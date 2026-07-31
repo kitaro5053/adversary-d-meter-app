@@ -32,6 +32,13 @@ import streamlit as st
 import presence  # 同時接続数（プロセス内メモリで計測・外部ストレージ不要）
 import cloud      # Supabase永続機能（未設定でno-op）。まずは疎通確認用の app_open のみ配線
 
+# C-19：日次アクセス集計。CLI（scripts/analyze_events.py）の集計部を**そのまま再利用**する
+# （dev_mode 限定の管理ビューで使用）。読めない配置でも相談AI本体は動かす＝集計だけ諦める。
+try:
+    from scripts import analyze_events as _analyze_events
+except Exception:  # noqa: BLE001
+    _analyze_events = None  # type: ignore[assignment]
+
 
 def _detect_mobile() -> bool:
     """スマホ表示にするか（PC版に影響を出さない別分岐用）。判定は3段構え：
@@ -178,7 +185,9 @@ MODELS = {
 TRANSLATOR_MODEL = "claude-sonnet-5"
 
 # 機能の節目で手動更新する人間可読バージョン（git短縮ハッシュとは別の目印）。
-APP_VERSION = "0.22.2"  # β-FB：防御プランナーを思考表示トグル配下へ（既定OFF）・KBヘッダのガイドライン準拠表記
+APP_VERSION = "0.23.0"  # ★2026-07-31昇格：E-2行方不明の禁止エリア（ルール違反修正）・供給会計A-78・
+#   脅威モデル収支化DP-6・噂の残弾B-113・B-100混合AI既定ON（Phase3/4）・belief改善（B-101/102/108）・
+#   友好/無意味手の是正（B-86'/B-103/B-109/110）・UI修正（U-5/7/8/9/10）・評価基盤（B-105/107・規約§11b）
 
 
 @st.cache_data
@@ -899,6 +908,10 @@ with st.sidebar:
                      "📜 脚本工房", "🔁 リプレイビューワー", "💬 相談AI"]
     if not _IS_STABLE:
         _mode_options.append("🛠 開発者用")
+        # ★U-1c：ユドナリウム読込は**開発版のみ**（権利配慮の隔離ポリシー＝udon/ は
+        #   公開ミラーの whitelist に入れない）。安定版に選択肢が残っても上の
+        #   fail-safe（options外→ホーム）で拾われる。
+        _mode_options.append("🧪 ユドナリウム読込")
     if st.session_state.get("app_mode") not in _mode_options:
         st.session_state["app_mode"] = "🏠 ホーム"
     _app_mode = st.radio(
@@ -909,7 +922,8 @@ with st.sidebar:
              "あなたが脚本家としてAI主人公に挑む（AIの推理を見ながら）／"
              "脚本工房（脚本を組み・難易度を診断し・『プレイ用JSON』でそのまま遊ぶ）／"
              "保存した対局ログ(.jsonl)を日単位で振り返るビューア／ルールの質問に答えるチャット／"
-             "開発者用（負け筋ネットワークのレビュー資料）を切り替えます。",
+             "開発者用（負け筋ネットワークのレビュー資料）／"
+             "ユドナリウム読込（部屋ZIP→盤面推論→裁定・開発版限定）を切り替えます。",
     )
     # 表示（PC/スマホ）切替。既定は端末自動判定。スマホでは横並びを縦積みにして見やすくする。
     _view_labels = ["🖥 自動", "💻 PC", "📱 スマホ"]
@@ -1005,7 +1019,7 @@ if _app_mode.startswith("🎭"):
 
     st.session_state["app_version"] = APP_VERSION
     # 人間=脚本家 vs AI主人公＋主人公AI内省パネル。
-    _run_guarded("🎭", lambda: render_play_vs_ai(mobile=_MOBILE))
+    _run_guarded("🎭", lambda: render_play_vs_ai(mobile=_MOBILE, stable=_IS_STABLE))
     st.stop()
 
 if _app_mode.startswith("🔁"):
@@ -1021,6 +1035,18 @@ if _app_mode.startswith("🛠"):
     # 開発者用：負け筋ネットワーク（DP-1 Stage 1）のレビュー閲覧＝ユーザー/手練れ協力者が
     # スマホから完全性レビューできるようにする（表示のみ・ゲーム状態に触れない）。
     _run_guarded("🛠", lambda: render_losstree_view(mobile=_MOBILE))
+    st.stop()
+
+if _app_mode.startswith("🧪"):
+    # ★U-1c：ユドナリウム部屋ZIPの読込（開発版限定）。隔離ポリシーにより `udon/` は
+    #   公開ミラーに存在しない＝**import は lazy かつ ImportError を握って無効化**する
+    #   （ミラー環境でも app.py が壊れないことがこの try/except の目的）。
+    try:
+        from udon.ui import render_udon
+    except ImportError:
+        st.info("この機能はこのビルドでは利用できません（開発版限定）。")
+        st.stop()
+    _run_guarded("🧪", lambda: render_udon(mobile=_MOBILE))
     st.stop()
 
 if _app_mode.startswith("📜"):
@@ -1188,6 +1214,74 @@ with st.sidebar:
                 st.caption("⚠ feedback/events の一覧には Secrets に SUPABASE_SERVICE_KEY(service-role) "
                            "が必要（RLSでanon読取不可）。games は anon読取可。"
                            "payload の個人情報(コメント)・ネタバレ(配役/犯人)の取扱いに注意。")
+
+            # ★日次アクセス集計（C-19後半）：CLI（scripts/analyze_events.py）と同じ集計関数を
+            #   **import して再利用**する＝ロジックの二重実装をしない。サーバ側（Streamlit Cloud）で
+            #   走るのでブラウザから今日/過去N日の利用状況が見られる。dev_mode 限定＝安定版には出ない。
+            #   ★自由記述コメントの本文は出さない（件数のみ）＝CLI と同じプライバシー方針。
+            with st.expander("📊 日次アクセス集計（events・JST）", expanded=False):
+                _ev_days = st.radio(
+                    "集計期間（JST・今日を含む）", [1, 3, 7], index=0, horizontal=True,
+                    format_func=lambda d: "今日" if d == 1 else f"過去{d}日",
+                    key="admin_ev_days")
+                _ev_url = cloud._secret("SUPABASE_URL").rstrip("/")
+                _ev_key = cloud._admin_key()
+                _agg = None
+                if _analyze_events is None:
+                    st.caption("⚠ scripts/analyze_events.py を読み込めませんでした"
+                               "（集計のみ無効・他の管理ビューは通常どおり）。")
+                elif not (_ev_url and _ev_key):
+                    st.caption("⚠ 集計には Secrets の SUPABASE_SERVICE_KEY(service-role) が必要です"
+                               "（events は RLS で anon SELECT 不可）。未設定のため表示できません。")
+                else:
+                    try:
+                        _agg = _analyze_events.collect(_ev_url, _ev_key, days=int(_ev_days))
+                    except Exception as _e:  # noqa: BLE001  取得失敗でUIを壊さない（案内のみ）
+                        st.caption(f"⚠ 取得に失敗しました（ネットワーク/キー/権限を確認）: {_e!r}"[:300])
+                if _agg is not None:
+                    st.caption(f"対象期間: {_agg['start_jst']:%Y-%m-%d %H:%M} 〜 "
+                               f"{_agg['end_jst']:%Y-%m-%d %H:%M}（JST）")
+                    _c1, _c2 = st.columns(2)
+                    _c1.metric("訪問セッション（近似）", len(_agg["open_sessions"]))
+                    _c2.metric("総イベント", _agg["total_events"])
+                    st.caption("※ session_id はリロード/別タブで変わる＝**人数ではなくセッション数の"
+                               "近似**（多め側に出る）。")
+                    # 時間帯ヒストグラム（横軸＝JSTの時 0〜23）
+                    st.caption("時間帯別（JST 0〜23時）")
+                    st.bar_chart({
+                        "訪問(app_open)": [_agg["by_hour"][h]["open"] for h in range(24)],
+                        "全イベント": [_agg["by_hour"][h]["events"] for h in range(24)],
+                    })
+                    if len(_agg["by_date"]) > 1:      # 複数日を選んだときだけ日別の内訳
+                        st.caption("日別（JST）")
+                        st.dataframe(
+                            [{"日付": d, "訪問": _agg["by_date"][d]["open"],
+                              "セッション": len(_agg["by_date"][d]["sessions"]),
+                              "全イベント": _agg["by_date"][d]["events"]}
+                             for d in sorted(_agg["by_date"])],
+                            use_container_width=True, hide_index=True)
+                    _rows_ev = [{"イベント": k,
+                                 "内容": _analyze_events.EVENT_LABELS.get(k, "—"), "件数": v}
+                                for k, v in _agg["by_event"].most_common()]
+                    _rows_mode = [{"モード": k, "切替回数": v}
+                                  for k, v in _agg["by_mode"].most_common()]
+                    _rows_ch = [{"channel": k, "件数": v}
+                                for k, v in _agg["by_channel"].most_common()]
+                    for _label, _rows in (("イベント種別", _rows_ev), ("モード別", _rows_mode),
+                                          ("チャンネル別", _rows_ch)):
+                        st.caption(_label)
+                        if _rows:
+                            st.dataframe(_rows, use_container_width=True, hide_index=True)
+                        else:
+                            st.caption("（該当なし）")
+                    st.caption(
+                        f"フィードバック {_agg['fb_total']}件"
+                        f"（うち自由記述コメントあり {_agg['fb_with_comment']}件"
+                        f"／👍👎🐛内訳 "
+                        + "・".join(f"{k}:{v}" for k, v in _agg["fb_by_kind"].most_common())
+                        + "）※コメント本文はプライバシー配慮のため表示しない（件数のみ）。")
+                    if _agg["skipped_events"]:
+                        st.caption(f"（期間外/日時不明で除外: {_agg['skipped_events']}件）")
 
     # --- テストログ（テスターが結果を提出するためのダウンロード） ---
     # ★安定版（β公開）では節ごと出さない（テスター名欄含む・一般ユーザーの報告経路は

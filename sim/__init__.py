@@ -21,7 +21,14 @@ from .state import (
     validate_script,
 )
 from .flow import run_day, run_game
-from .generator import random_script
+from .generator import (
+    DAY_OPTIONS,
+    DEFAULT_DAYS,
+    STANDARD_CAST_POOL,
+    incident_count_range,
+    random_script,
+    recommended_loops,
+)
 from .views import mastermind_view, protagonist_view
 
 __all__ = [
@@ -43,4 +50,9 @@ __all__ = [
     "run_day",
     "run_game",
     "random_script",
+    "incident_count_range",
+    "recommended_loops",
+    "STANDARD_CAST_POOL",
+    "DAY_OPTIONS",
+    "DEFAULT_DAYS",
 ]

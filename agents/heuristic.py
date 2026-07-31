@@ -34,9 +34,11 @@ from __future__ import annotations
 import random
 
 from engine.board import AREAS
-from engine.data import (ROLE_CLAUSE_ABILITY, forbidden_of, goodwill_abilities_of,
-                        unrest_threshold_of)
+from engine.data import (ROLE_CLAUSE_ABILITY, ability_kind, forbidden_of,
+                        goodwill_abilities_of, incident_defeats_protagonists,
+                        rule_y_decisive_incident, unrest_threshold_of)
 from engine.models import MOVE_CARDS
+from engine.turn_end_rules import TT_DEFEAT_GOODWILL_MAX
 
 
 def _incident_nullified_by_immortal(inc_name: str, culprit_role: str) -> bool:
@@ -50,8 +52,26 @@ def _incident_nullified_by_immortal(inc_name: str, culprit_role: str) -> bool:
     """
     return inc_name == "自殺" and ROLE_CLAUSE_ABILITY.get(culprit_role) == "不死"
 from sim.reference import CHARACTER_ATTRIBUTES
+from sim.state import missing_incident_boards_from_view
+
+# ★A-78 計測フック（既定 None＝**本番経路は完全に無変更**）。`arena/a78_audit.py` が
+#   差し替えて「行方不明の供給を、犯人が行けない板に数えていた席」を数える（B-105 が要求する
+#   並び順に依存しない主指標＝行為の数え上げ）。呼び出しは1 `_analyze` につき1回。
+A78_PROBE = None
 
 _ANRYAKU_VALUE = {"暗躍+1": 1, "暗躍+2": 2}
+
+# ★A-77：勝ち筋の会計が**打点を表現できている**事件（＝押し切りに札を割く価値を計算済み）。
+#   行方不明＝犯人を任意のボードへ移し、そのボードに暗躍1（KB: rules/40_first_steps.md:153／
+#   rules/50_basic_tragedy_x.md:212）／邪気の汚染＝神社に暗躍2（KB: 50:199）／
+#   不安拡大＝任意1人に不安2＋**別の任意1人に暗躍1**（KB: 40:149／50:196）＝
+#   いずれも `_supply_of`／`_cap_reaching` の供給源として計上済み。遠隔殺人＝A-56②/A-67 の
+#   利得ゲート（KP/フレンド/ラバーズが的として成立する時だけ）を通ったものだけが today_gainful。
+#   病院の事件＝A-18 が病院をゴールボードに載せる経路で会計済み。
+#   これ以外（殺人事件・自殺・蝶の羽ばたき 等）は「発生しても勝ち筋の会計上の打点が無い」＝
+#   折られやすさを理由に札を追加投入する根拠が無い＝A-77 の押し切り対象から外す。
+_ACCOUNTED_INCIDENTS = frozenset({"行方不明", "邪気の汚染", "不安拡大",
+                                  "遠隔殺人", "病院の事件"})
 
 
 def _ability_class_target_alive(user: str, ability: str, chars: dict) -> bool:
@@ -113,15 +133,116 @@ MM_PARAMS: dict[str, float] = {
     #   除去者不在 ②フレンド死亡済み（A-49確定弁と同一） ③僕と契約のKPに暗躍≥2（A-54b側のみ）。
     #   既定1で有効・0で A-54 単体（例外4なし）へ戻す＝掃引/デバッグ用の切替口。
     "plus2_win_certain_gate": 1.0,
+    # ★A-61（2026-07-27・L1事故検死 §2パターン2＝P3/P4）：+2の**対象在場・被覆実績ゲート**。
+    #   A-54会計の残穴＝対象の登場日・被覆実績を見ない。(1)本命KP（契約=単独勝ち／殺人計画=
+    #   キラー生存）が**未登場×このループ内に登場予定**の間は、他先への+2を非正当化＝登場日まで
+    #   温存（s7/s19検死＝D1/D2に切って本命喪失・CF=温存で3局L1反転）。(2)暗躍禁止で覆われる
+    #   実績が濃いキャラ（killer_guarded/KP覆い2回）へは切らない（§1i「防がれうる場所に気軽に
+    #   切らない」）。盤はA-57（貫通+2）の管轄＝対象外・A-54の例外群（確定級転用等）は不変。
+    #   判定材料は自明情報のみ（entry_days＝脚本家公開・暗躍禁止の実績＝公開history）。
+    #   既定1で有効・0で旧挙動へ完全復帰＝掃引/デバッグ用の切替口。
+    "plus2_presence_gate": 1.0,
+    # ★A-61：温存ゲート時の減点は plus2_waste(22) では足りない（s19実測＝囮盤+2が 40-22=18 で
+    #   ノイズ10に勝ち D3 に浪費→D4 のKP登場に切り札が無い）。囮盤(40)を filler帯(1)まで落とす
+    #   39 とする（A-54 の一般減点22は不変＝landed バランス維持。下限は切らない原則も維持＝
+    #   他が全て無価値なら依然置く）。
+    "plus2_hold_waste": 39.0,
     "plus2_waste": 22.0,
     # (2) キーパーソン暗躍
     "set_kp_done": 30.0, "set_kp_blocked": 25.0, "set_kp_base": 90.0,
     "set_kp_unfunded": 40.0,
+    # ★A-62（2026-07-27・L1事故検死 §2パターン3＝B3残欠・A-52 doc「B3は別途」の実施）：
+    #   A-48上限会計（KP暗躍＝除去者生存3/不在2・キラー暗躍＝ルール上4）の**全面展開**。
+    #   従来はクロマク能力側（_advances_win_char×リーク弁）にしか無く、
+    #   (1)カード側＝anyaku>=2でset_kp_done(30)止まり＝上限超過でも filler にならない
+    #   (2)能力側＝リーク弁(reveal_cost>0)経由＝クロマク露呈後は抑制が外れ自由に積める
+    #   (3)事件側＝不安拡大（暗躍+1）/蝶の羽ばたきの対象選択が上限を見ない
+    #   の3経路が過剰積みの源（5日 random_BTX s14＝KP暗躍5/上限3）。バッファ超過分を
+    #   filler化＝打点ゼロの積み増しに使う資源（カード/能力/事件効果）を有効手へ回す。
+    #   既定1で有効・0で旧挙動へ完全復帰＝掃引/デバッグ用の切替口。
+    "anyaku_cap_gate": 1.0,
+    "set_kp_over": 1.0,   # 上限超過KPへのカード暗躍＝filler最下位（A-21/A-25と同帯）
     # (2b) キラー自己暗躍
     "set_killer_done": 15.0, "set_killer_blocked": 95.0,
     "set_killer_funded": 85.0, "set_killer_unfunded": 10.0,
+    # ★A-67（2026-07-27・監査『mm再検死』§1c/§1d）：役職効果の勝ち筋を path_costs に載せる。
+    #   従来は board/kp/killer4 の3本のみ＝役職効果による勝ち筋がモデルに1本も無く、
+    #   btx_bomb帯10局が「盤単線＝mmに手なし」と誤判定されていた（CF 10/10反転で反証）。
+    #   ①lovers＝メインラバーズの主人公殺害（50:160＝不安3以上＋暗躍1以上）。相方ラバーズの
+    #     死亡で不安6が無償で乗る（50:153,159）＝**不安レースを迂回**できる筋。
+    #   ②friend＝フレンド除去（40:130＝ループ終了時に死亡していれば主人公は敗北）。
+    #   殺害コストは殺害系事件の的にするのに要る暗躍で数える（遠隔殺人＝暗躍2／40:152、
+    #   病院の事件＝病院暗躍1／40:151、SK＝2人きりの配達1手）。事件の発火自体は
+    #   reachable_culprits（不安レース算術＝mm正味+1/日）が担保する＝§1d。
+    #   role_effect_paths=0 で2本ともモデルから外して旧挙動へ完全復帰。
+    "role_effect_paths": 1.0,
+    #   ★事件依存リスク：lovers/friend は「事件が発火する」ことが前提＝board/kp/killer4に
+    #   無い失敗経路（主人公が犯人を冷やせば筋ごと消える）。同コストならこちらを劣後させる
+    #   （cost_board_guarded と同じ実効コスト加算の作法）。
+    "cost_incident_dep": 0.5,
+    "set_lovers_funded": 88.0, "set_lovers_unfunded": 18.0, "set_lovers_done": 8.0,
+    "set_friendkill_funded": 90.0, "set_friendkill_unfunded": 18.0,
+    "set_friendkill_done": 8.0,
+    #   殺害手段になる事件の犯人の不安＝パスの一部として資金化（暗躍側98と競れる帯）。
+    "set_unrest_killpath": 92.0,
+    # ★A-74（2026-07-28・DP-3 Step1『勝ち筋ランキング実測』）：**未来改変プラン族の勝ち筋**を
+    #   path_costs に載せる。A-67（役職効果パス）と同型の「列挙の欠落」＝`btx_future`/
+    #   `btx5_future` では path_costs が空（funded ∅）で、AIは「勝ち筋ゼロ本」と判定して打っていた
+    #   （独立実装 sim/loop_race.analyze_loop は同局面で butterfly と tt を挙げる）。
+    #   ①butterfly＝**発生そのものが敗北条件**（KB: rules/50_basic_tragedy_x.md:45-47
+    #     「このループ中に蝶の羽ばたきが発生していた場合、ループ終了時に主人公は敗北する」）。
+    #     事件テキスト＝同 217-219。∴ 勝ち筋の実体は「犯人の不安を臨界へ運ぶ」レース＝
+    #     **コストの通貨が暗躍でなく不安**（board/kp/killer4/lovers/friend はすべて暗躍建て）。
+    #     ルールYと事件名の対応は engine.data.RULE_Y_INCIDENT_DEFEAT が単一ソース
+    #     （sim/loop_race・sim/script_quality と共有＝二重定義の回避）。
+    #   ★A-73/A-73b の会計に**別枠を作らず**接続する：sink の kind に "unrest" を足し、
+    #     その容量は「札の不安+1（1/ターン・同一対象へ重ね置き不可＝sim/legal DUP_TARGET）
+    #     ＋ミスリーダー能力（同室時 +1/ターン。KB: 40:108/50:139）」＝**reachable_culprits の
+    #     算術（mm_rate×残ターン）と同じ一次情報**を使う（＝不安レースの二重定義も作らない）。
+    #     暗躍建ての source（暗躍+1/+2・クロマク・噂・事件）は unrest sink に**届かない**＝
+    #     Gale–Hoffman の部分集合判定がそのまま正しく分離する。
+    #   ★§1d の規律も踏襲＝「不安レースで届かない事件は勘定に入れない」（reachable ゲート）。
+    #   a74_butterfly_path=0 で列挙前へ完全復帰（掃引/デバッグ用の切替口）。
+    "a74_butterfly_path": 1.0,
+    #   ★掃引の結果＝**列挙だけでは両ベンチ bit 不変**（funded が空でなくなるだけでは手が動かない）。
+    #     採点フックは2つあり、**カード側は負の結果・能力側だけが改善**という非対称が出た：
+    #   ①カード側（set_unrest_butterfly＝行動カード「不安+1」を蝶の犯人へ）＝**0で無効（既定）**。
+    #     掃引 45/55/66/75/92 の全点で 5日 btx5_future 3.2→2.1〜2.6 に退行。機序＝脚本家の
+    #     カードは**1ターン3枚**の共有枠で、不安+1を最上位に上げると同じ枠を争う移動帯
+    #     （SK配達58/murder_meet65＝フレンド殺害という**別の勝ち筋**）を押し出す＝A-67 の
+    #     「役職効果パスを二正面の副軸にしない」と同型の共倒れ。加えて 45〜92 のどの値でも
+    #     結果が同一＝**選ばれる3枚の集合は変わらず順序だけが変わる**局面が多く、
+    #     `_pick` の同点タイブレークの籤が引き直されて既知の 45-45 移動タイ
+    #     （A-64 が「0.0点タイの籤引き」と記録した btx5_future の欠けモード）が裏返っていた
+    #     ＝**採点の勝ち負けではなく籤の引き直し**＝施策としても不健全。値は掃引用に残す。
+    #   ②能力側（ab_unrest_butterfly＝ミスリーダー能力の不安+1を蝶の犯人へ）＝**85で有効**。
+    #     脚本家能力フェイズはカードの3枚枠と**別の意思決定**＝移動帯を押し出さない＝
+    #     カード側の共倒れが起きない。従来は ab_unrest_future(35) 止まりで、同じ「未来の犯人」
+    #     である殺人事件の犯人と同点扱い＝ML能力が蝶以外に流れていた。
+    #     ★値は 45/60/85/100 のいずれでも両ベンチ完全同一（＝35 を超えるか否かだけが効く）。
+    #     85 を採る理由＝ab_unrest_today(80) より上・ab_anyaku_killer(88) より下＝
+    #     「発生そのものが敗北条件」の事件は generic な当日事件より優先し、
+    #     暗躍建ての本命パスの席は奪わない、という順位づけ（帯の意味に合わせた選択）。
+    "set_unrest_butterfly": 0.0,
+    "ab_unrest_butterfly": 85.0,
+    #   ★tt＝タイムトラベラーの敗北宣言（KB: 50:124-128
+    #     「【任意】最終日のターン終了フェイズに、このキャラクターに友好カウンターが2つ以下しか
+    #      置かれていない場合、主人公を敗北させても良い」／閾値の単一ソース＝
+    #      engine.turn_end_rules.TT_DEFEAT_GOODWILL_MAX）。
+    #   ★**脚本家側の手数コストは 0**（カードも能力も要らない）が、同時に**脚本家に前進手段が無い**：
+    #     友好禁止は【強制】無視（KB: 50:127）＝主人公の友好+を止められず、脚本家の手札に
+    #     友好を減らすカードは無い（engine/models.MASTERMIND_HAND）。唯一の干渉は事件「流布」
+    #     （KB: 50:214＝友好2つを別のキャラへ移す）だが、これは事件側の対象選択の話。
+    #   ∴ path_costs に 0 コストで載せると**必ず第1位を占めて二正面の枠を1本潰す**のに、
+    #     対応する採点フック（前進手）が1つも無い＝純粋な副作用。**既定0＝載せない**とし、
+    #     掃引用の切替口（=1）だけ残す。実測＝下の掃引結果を参照。
+    "a74_tt_path": 0.0,
     # (3) 不安の注ぎ先
     "set_cool_locked": 65.0, "set_unrest_locked": 2.0,
+    # ★A-66（2026-07-27）：理想filler＝不安0への不安-1（保証つき無効果札）。
+    #   自陣供給役の徘徊(stray=3)・飽和霧(sat=2)・臨界0霧(zero_th=1)より上＝
+    #   意味のある手（噂/搬送/押し込み等≥5）には決して勝たない。
+    "set_cool_zero_filler": 4.0,
     "set_unrest_today": 60.0, "set_unrest_today_far": 12.0,
     "set_unrest_future": 40.0, "set_unrest_future_far": 8.0,
     "set_unrest_virus": 3.0, "set_unrest_sat": 2.0,
@@ -136,10 +257,163 @@ MM_PARAMS: dict[str, float] = {
     #   どちらも既定1＝有効。0で旧挙動へ復帰＝掃引/デバッグ用の切替口。
     "incident_arith_strict": 1.0,
     "incident_payoff_gate": 1.0,
+    # ★A-71（2026-07-27・A-56契約の再審＝**時制の統一**）：A-56②は「現在の盤面（既に暗躍≥1）」で
+    #   利得を判定し、A-67は「手番の可能性（1/loop札 暗躍+2 が残っていれば的は1枚で作れる）」で
+    #   判定する＝どちらも正しい会計だが、A-56②の厳格適用は**的を作る前に筋が消える循環**を生む。
+    #   統一形＝「可能性は、**その可能性を消費する計画を実際に資金化している時だけ**勘定に入れる」。
+    #   実装＝2パス：①緩和を全利得対象に許した楽観パスで path_costs/funded を出し、
+    #   ②funded な役職効果パスが**実際に選んだ的**（friend_target／ラバーズ）にだけ緩和を許して
+    #   本計算をやり直す。本線（board/kp）が生きていれば役職効果パスは funded に入らない
+    #   （A-67「二正面の副軸にしない」の規律）＝**A-56②の原判定がそのまま復元される**。
+    #   payoff_gate_unified=0 で旧挙動（A-67 landed＝ラバーズだけ無条件緩和）へ完全復帰。
+    "payoff_gate_unified": 1.0,
+    #   additive=1＝A-67 landed のラバーズ緩和は funded に依らず維持する（統一形を**加算的**に
+    #   適用＝実測済みのA-67 landを壊さない）。0＝ラバーズも funded ゲートに掛ける（純粋統一形）。
+    "payoff_unified_additive": 1.0,
+    #   kp=1＝KPパスが funded なら KP も的として勘定に入れる。KPパスの資金化＝本線が自分で
+    #   KP暗躍を2まで積む＝40:152の的が**副産物として**完成する＝追加コスト0の第2の届け口
+    #   （僕と契約は暗躍2単独で勝ち／殺人計画はキラー同席が要る＝遠隔殺人は別の届け口になる）。
+    #   ★既定0＝**保留**。掃引実測は両ベンチとも純mm+（3日 mean 3.000→3.046・5日 3.071→3.129・
+    #   5日L1 5→4・退行flip 0）だが、A-56 landed契約の再発防止テスト
+    #   （test_remote_murder_without_payoff_target_is_dropped＝殺人計画×キラー生存の設問で
+    #   kpパスが funded になる）を**破る**＝勝手にゲートを緩めない（A-64先例）。採否はFableA裁定。
+    "payoff_unified_kp": 0.0,
+    #   relax_all=1＝fundedゲート無しで全利得対象へ緩和＝A-67で見送られた「広い版」そのもの
+    #   （A-56②のlanded契約と正面衝突する形）。掃引・負の対照用。
+    "payoff_relax_all": 0.0,
+    # ★A-73（2026-07-27・DP-3 Step1 §4-A の算術で証明された誤りの是正）：**実効供給**の会計。
+    #   旧モデル `supply = 残り日数 × 2` は札の実供給と一致しない：脚本家の暗躍札は
+    #   **暗躍+1 ×1 と 暗躍+2 ×1 だけ**（KB: rules/00_rules_core.md:92「脚本家のループ開始時手札
+    #   （10枚）…暗躍+1／暗躍+2」＋ engine/models.py MASTERMIND_HAND）で、暗躍+2 は 1/loop
+    #   （KB: rules/10_action_cards.md:39「暗躍+2 (1/loop)」・:76）＝
+    #   **札の実供給＝残り日数 ＋ 2（暗躍+2 が残存している時）**。3日=5・5日=7 に対し旧=6・10。
+    #   supply_model: 0=旧(days×2)／1=札のみ／2=札＋能力供給／3=札＋能力−遮断。
+    #   ★1〜3では供給を**スカラー1本でなく勝ち筋の集合ごと**に評価する（置ける場所が違う）。
+    #   ★掃引で採用＝2（札＋能力）。1（札のみ）は能力供給を落とすぶん保守的すぎ、
+    #   3（−遮断）は掃引の全点で退行した（3日L1が3→14＝btx_bomb帯の二正面が全滅）。
+    #   ★★FableAゲート裁定（2026-07-27）＝**既定は0（旧＝日数×2）でland**。
+    #   理由＝採用形(2)は3日 防衛128→107・loss0→1、5日 67→62・**loss0→4**、較正済み帯も大きく移動
+    #   （btx_bomb 2.0→9.0／btx_seal 3.3→9.0／fs5_guard 2.3→3.1）＝**釣り合いの再基準化に相当**し、
+    #   ユーザーの裁定事項（A-71が「広い版」を見送った先例と同じ理由＝較正済み帯を侵す）。
+    #   加えて**既知の過大計上**が残る＝クロマクは1ターン1回・置ける先も限定なのに勝ち筋の集合へ
+    #   一括加算する上界＝二正面の両方には注げない。実際に新規L1事故（3日 random_BTX s14）を
+    #   生んでいる＝**A-73b（対象別の排他配分の会計）で潰してから再評価**する。
+    #   ＝機構と掃引結果は保存し、**既定OFFで測定可能な状態**にしてlandする（advisory先行の作法）。
+    "supply_model": 2.0,
+    #   クロマクの脚本家能力（KB: 40:86 / 50:115＝同一エリアのキャラ1人 or 自分の居るボードに
+    #   暗躍+1／脚本家能力フェイズ＝暗躍禁止で止まらない KB: 10:65）の1日あたり供給。
+    #   1ターン1回＝**共有プール**として扱い、複数の勝ち筋に二重計上しない。
+    "supply_kuromaku_rate": 1.0,
+    #   主人公の暗躍禁止による遮断の期待値/日（supply_model=3のみ）。
+    #   ★保守的に見積もる（過大な減算は「届く筋まで諦める」退行になる）。
+    "supply_block_per_day": 0.0,
+    #   supply_gate_raw=1＝資金ゲートを**構造コスト**（実際に置く暗躍/手数の個数）で判定し、
+    #   リスク割増（守られ+2／読まれ+2.5×P／事件依存+0.5）は**順位づけにだけ**使う。
+    #   ★旧 `supply=日数×2` は割増ぶんを吸収する「水増しされた予算」として働いていた＝
+    #   供給だけを正しい値に締めると、割増が資金判定に紛れ込んで届く筋まで落ちる。
+    #   ★2＝構造コスト＋「守られ」割増だけ資金判定に残す（守られ＝**観測された遮断**＝
+    #   供給の減算に相当。読まれ/事件依存は**推定**リスク＝順位づけ専用にする）。
+    #   ★3＝事件依存（+0.5）の割増だけ資金判定から外す＝**旧ゲートに最も近い保守形**。
+    #   ★掃引で採用＝**3**。0（旧）は供給を締めた瞬間に割増が資金判定へ紛れ込んで退行し、
+    #   1（構造のみ）は守られた筋に資金を出し続ける（revenge帯で実測）。2（構造＋守られ）は
+    #   3日/5日とも mm最強クラスだが、**M2 の landed 契約テスト**
+    #   （test_path_cost_rises_when_role_revealed＝役職がバレた筋を funded から降ろす）を破る
+    #   ＝勝手にゲートを緩めない（A-64先例）ため**保留**。採否はFableA裁定。
+    #   ★★FableAゲート裁定（2026-07-27）＝supply_model を既定0にしたため**こちらも既定0**
+    #   （両方0＝A-73前と完全同一＝per-game bit一致を実測確認）。A-73b の後に一括で再評価する。
+    "supply_gate_raw": 3.0,
+    # ★A-73b（2026-07-27）：供給を**対象別（sink別）に持ち、排他的に配分**する。
+    #   A-73 は供給を「勝ち筋の集合に対するスカラー1本」で足し込むため、次の3つが甘い：
+    #     (a) 偽装ボード（decoy）が**本命1本としか**予算比較されない＝三正面に資金が出る。
+    #     (b) 暗躍+2 は1枚＝**1つの対象にしか置けない**のに、2単位が複数の勝ち筋へ分割できる
+    #         扱いになる（KB: rules/10_action_cards.md「暗躍+2 (1/loop)」＝札1枚）。
+    #     (c) クロマクは**自分の立っているエリア**のキャラ1人 or 自ボードにしか置けない
+    #         （KB: rules/40_first_steps.md:86／rules/50_basic_tragedy_x.md:115）のに、
+    #         到達（別エリアへの移動）の手数が引かれていない。
+    #   supply_alloc=1 で、供給を source（札+1／札+2／クロマク／噂／事件）× sink（具体的な
+    #   ボード or キャラ）の**二部フロー**として持ち、Gale–Hoffman（Hallの一般形）
+    #   「任意の部分集合Tについて Σ需要(T) ≤ Σ(Tのどれかに届く source の容量)」で
+    #   **実行可能性**を判定する＝同一ターンの1回を複数の勝ち筋で二重に使わない。
+    #   0＝A-73のまま（供給スカラー）／1＝勝ち筋の資金判定を排他配分にする（偽装ボードの
+    #   比較範囲はA-73と同じ「本命1本＋偽装」）／2＝偽装ボードも **funded 全本と同時に**
+    #   排他配分する（＝二正面＋偽装の三正面に資金を出さない）。
+    #   supply_model=0 の時は無関係（旧供給に完全復帰）。
+    #   ★掃引（3日130局／5日70局・PYTHONHASHSEED=0・A-73採用形 model=2/gate=3 の上）：
+    #     採用候補＝**alloc=1 × supply_km_move_cost=2**（3日 L1 4→3＝s14事故のみが直り
+    #     他は flip 0／5日 flip 1・L1据置）。alloc=2（偽装も同時配分）は 3日 s16 に
+    #     **別のL1事故を作る**（偽装が降りて本命の完成順の規律が外れ、盤が早く満ちて読まれる）
+    #     ＝L1は減らない。alloc=1×move_cost=3 は s14 に加え余分な flip が出る。
+    "supply_alloc": 1.0,
+    #   クロマクの到達手数：sink群を賄うのに必要な「立ち位置の切り替え」1回あたり、
+    #   クロマク供給から引く日数。★保守側に倒す（過大な減算は「届く筋まで諦める」退行
+    #   ＝A-73の遮断減算 supply_block_per_day が全点で退行した先例）。
+    #   ★実測所見：2×2盤（KB: engine/board.py／00 コンポーネント）では移動カード1枚で
+    #   任意のエリアへ行け、かつ**行動解決フェイズは脚本家能力フェイズより前**
+    #   （KB: rules/00_rules_core.md ターンの流れ）＝「移動した当日に置ける」＝
+    #   **素の到達遅延は0日**。よってこの係数が引いているのは日数そのものではなく
+    #   「移動カード1枠を割く／移動禁止で往復を阻まれる」実効的な取りこぼしの見積り。
+    #   0＝到達手数を引かない（A-73と同じ上界）。掃引の基準点。
+    #   ★**最初の1回の寄せは引かない**（`_km_cap` 参照＝KB上の到達遅延が0日のため。
+    #     実測でも初回寄せを引く形は両ベンチで1局も動かない＝空振りの補正）。
+    #   ★掃引結果（alloc=1 上・3日）：0/1＝s14事故そのまま／**2＝s14が直り flip はその1局のみ**／
+    #     3＝直るが余分な flip が出る。`supply_kuromaku_rate` を 0.5 に落とす代替も試したが
+    #     3日 L1 が 3→8 に爆発（basic帯が総崩れ）＝過大な減算の典型で不採用。
+    "supply_km_move_cost": 2.0,
+    # ★A-78（2026-07-30）：事件「行方不明」の供給は**犯人が移動できるボード**にしか届かない
+    #   （E-2 の公式裁定＝移動先に犯人の禁止エリアは選べない。KB: 00 禁止エリアの定義／
+    #   40 事件まわりの注意／40:153・50 の条文）。1＝規則どおり（既定）／
+    #   0＝旧挙動へ完全復帰（「任意のボードへ+1」＝**規則上あり得ない供給まで数える**）。
+    #   ★0 は**アブレーション計測専用**（B-105 が要求する寄与の分離）。運用値は 1 のみ。
+    "supply_missing_forbidden": 1.0,
+    # ★A-63（2026-07-27・目視検死『蝶レース再審』）：事件日の押し切り会計。
+    #   臨界到達で停止する2ゲート（カードの過剰置き抑制＋ML能力のbelowゲート）に
+    #   事件当日の例外を設ける＝「臨界＋主人公の同日冷却容量」まで同日ペアで維持する。
+    #   push_day_gate=0 で旧挙動（臨界で停止）へ復帰。スコアは today 系と同格。
+    #   ★push_rule_y_decisive_only=1（既定）＝発生自体がルールY敗北になる事件
+    #   （未来改変プラン×蝶の羽ばたき）に限定＝目視検死で全応手詰みまで証明した形だけ押す。
+    #   0＝全事件に一般化（実測：3日でbtx_contract等も動く一方、fs5_guardが10/10 lossへ
+    #   反転する大型シフト＝防衛側の適応（defense_audit）とセットで掃引・land判断する）。
+    "push_day_gate": 1.0,
+    "push_rule_y_decisive_only": 1.0,
+    # ★A-77（2026-07-28・B-90 land の帰結＝btx_bomb帯10局が全てL1防衛になった機序の是正）：
+    #   **折られやすさ（供給源の位置の脆さ）** ＝ 同室依存の供給を「保証された供給」に数えない。
+    #   KB接地：ミスリーダーの追加能力は【任意】各ターンの脚本家能力フェイズに
+    #     「**このキャラクターと同一のエリアにいる**キャラクター1人に不安+1」
+    #     （rules/40_first_steps.md:108／rules/50_basic_tragedy_x.md:139）＝**位置が発動条件**。
+    #   主人公のループ開始時手札には移動↑↓・移動←→が各1枚あり（rules/00_rules_core.md:92）、
+    #     1/loop 制限が付くのは移動禁止だけ（rules/10_action_cards.md:20）＝
+    #     **毎ターン移動札1枚で同室条件を外せる**。
+    #   脚本家側の復元は移動札（rules/10_action_cards.md:31-33。移動斜めのみ1/loop）だが、
+    #     行動解決フェイズは**同時公開**（rules/00_rules_core.md:104-）＝相手が剥がした当日に
+    #     復元することは保証できない＝**復元コストは最短でも翌ターン**。
+    #   ∴ 事件日に「ML能力の+1」を保証された供給として数えるのは過大評価＝供給を0に割り引き、
+    #     **札（不安+1×2枚）という独立な第2経路を並行して資金化する**（＝冗長化の選好）。
+    #   ★狭い述語（house rule §12）＝「犯人の部屋の他の生存者がちょうど1人＝その1人がML」の日
+    #     だけ折られやすいと見なす。主人公は役職を同定せずに供給源を一意に指せる＝実際に
+    #     主人公AI（B-90(a)）が発火する条件そのもの。2人以上なら移動1枚では供給源を消せない。
+    #   frail_supply_push=0 で A-77 前へ完全復帰（bit一致）。
+    "frail_supply_push": 1.0,
+    #   frail_cool_class=1＝A-77分岐の冷却容量は**対象クラス限定**（「学生の…」＝学生のみ）を
+    #   見て数える（engine.data.ability_class_target_alive＝A-23/B-24と同じ単一ソース）。
+    #   A-63本体の _n_cool（位置不問・クラス不問の過大側）は触らない＝landed契約を保存する。
+    #   ★過大な減算は「届く筋まで諦める」退行になる（A-73の遮断減算 supply_block_per_day が
+    #   全点で退行した先例）＝割り引く側（ML）と減算する側（冷却）の粒度を揃える。
+    "frail_cool_class": 1.0,
+    #   frail_push_accounted_only=1＝A-77分岐は**勝ち筋の会計が打点を表現できている事件**
+    #   （_ACCOUNTED_INCIDENTS）に限る。0＝today_gainful を通った全事件（掃引の基準点）。
+    "frail_push_accounted_only": 1.0,
+    "set_unrest_push": 60.0, "ab_unrest_push": 80.0,
     "set_noise_base": 18.0, "set_noise_reach": 8.0, "set_noise_low": 4.0,
     "set_noise_immobile": 12.0,  # 移動不可キャラへの伏せ札は「ほぼ不安」と読まれる＝減点（テスター知見）
     "set_noise_leak": 8.0,   # 不発予定日に臨界へ届かせる＝「臨界者は犯人でない」の消去を与える漏れ
     "set_move_witness": 45.0,  # キラー殺害が近い時、KPエリアへ第三者を寄せる＝偽キラー候補（目撃者）
+    # ★A-41'（再訪版・棚の再発掘A-1・2026-07-26）：クロマク供給のカバー移動＝供給ボードの
+    #   present を非自陣の第三者で肥やし、主人公B-59/(c3)/(c3b)のargmax/確度ゲートを外す。
+    #   45＝目撃者カバー(45)と同格・囮(40)より上（L1の供給初日からpresentを肥やす＝
+    #   30だと囮に席負けしてL2からしか効かず手遅れの実測）・搬送(47-56)/供給(95-120)より下＝
+    #   主筋の席は奪わない。掃引＝30はL1+1（mm微退行）・45で3日mean+0.054/L1-1・
+    #   5日防衛-1（mm改善・btx18はL2→L3遅延）。0で無効（旧挙動へ完全復帰）。
+    "set_move_cover": 45.0,
     # (4) 移動
     "set_move_killer": 50.0, "set_move_kuromaku": 48.0, "set_move_stray": 3.0,
     # ★A-52：**充足済みの勝ち筋の最後の1ピース**＝KP暗躍が既に2以上ある状態でキラーをKPの
@@ -161,6 +435,18 @@ MM_PARAMS: dict[str, float] = {
     "set_move_boardx_return": 50.0,
     "set_move_block_death": 54.0, "set_move_sk_approach": 58.0,
     "set_move_sk_evict": 56.0, "set_move_misleader": 52.0,
+    # ★A-64（2026-07-27・目視検死『蝶レース再審』真因②③）：移動統制の攻撃3形。
+    #   a64_gate=0 で3形まとめて旧挙動へ復帰（掃引/デバッグ用の切替口）。
+    #   ①sk_deliver＝標的（KP/フレンド）を「SKが1人で居るエリア」へ配達＝2人きりで【強制】殺害
+    #     （4a1の欠けモード＝btx5_future s0の0.0点タイ籤引きの解消）。approachと同格。
+    #   ②cool_exile＝解禁済み冷却役を、レースが生きている犯人のエリアから引き剥がす
+    #     （冷却能力は同エリア前提＝位置を1枚で解体・s1型）。目撃者カバー(45)と同帯＝
+    #     不安押し込み(40)より上・ML搬送(52)より下。
+    #   ③murder_meet＝発生見込みの殺人事件当日に、犯人と急所（KP/フレンド）を同席させる
+    #     （空撃ち防止・s8型）。当日押し込み(60)より上＝発生に加えて当たり先を確保する。
+    "a64_gate": 1.0,
+    "set_move_sk_deliver": 58.0, "set_move_cool_exile": 45.0,
+    "set_move_murder_meet": 65.0,
     "set_move_cultist_guarded": 56.0, "set_move_cultist": 47.0,
     # ★A-55：カルティスト搬送（§1i「静かな盤移動」＝A-42の足し算side）。カルティストが
     #   ゴール盤エリアに立てば、その盤への暗躍禁止を**ルールとして無効化**できる＝覆いを
@@ -217,6 +503,11 @@ MM_PARAMS: dict[str, float] = {
     "inc_board_goal": 100.0, "inc_board_other": 10.0,
     "inc_kp": 100.0, "inc_friend": 70.0, "inc_future_culprit": 1.0,
     "inc_threat": 45.0, "inc_other": 5.0,
+    # ★A-65（2026-07-27・目視検死『蝶レース再審』§4余談）：殺害系事件の被害者に不死を選ばない。
+    #   不死指定は合法だが「発生したが何も起きなかった」（40:158/50:192/60:A26）＝打点0。
+    #   inc_other(5) 未満＝他に候補が居れば避ける／inc_future_culprit(1) より上＝
+    #   自陣の未来の犯人を殺して事件を消すよりは空振りがマシ。
+    "inc_immortal": 2.0,
 }
 
 
@@ -274,6 +565,51 @@ class HeuristicMastermind:
     # -- 盤面分析（view から勝ち筋の材料を取り出す） -----------------------
 
     def _analyze(self, view: dict) -> dict:
+        """A-71：**時制を統一した**利得会計の入口（詳細＝MM_PARAMS "payoff_gate_unified"）。
+
+        `_analyze_impl` は「どの利得対象に *これから的を作る* 緩和を許すか」(_relax) を
+        引数に取る純関数。ここでは
+          ①緩和を全対象に許した**楽観パス**で funded（実際に資金化する勝ち筋）を出し、
+          ②その funded な役職効果パスが**選んだ的だけ**に緩和を絞って本計算をやり直す。
+        ＝「手番の可能性」は「その可能性を使う計画を実際に採っている」時だけ計上される。
+        payoff_gate_unified=0 で単パス＝A-67 landed 挙動へ完全復帰。
+        """
+        if not (self.p["payoff_gate_unified"] and self.p["incident_payoff_gate"]):
+            return self._analyze_impl(view)
+        # 緩和が意味を持ちうる局面だけ2パスにする（コスト抑制＝それ以外は単パスと同一結果）
+        _p2_left0 = ("暗躍+2" not in (view.get("used_cards", {})
+                                      .get("mastermind", []) or []))
+        if not (_p2_left0 and any(i["name"] == "遠隔殺人" and i["day"] >= view["day"]
+                                  for i in view["incidents"])):
+            return self._analyze_impl(view)
+        _roles0 = view["roles"]
+        _chars0 = {c["name"]: c for c in view["characters"]}
+        _kp0 = next((n for n, r in _roles0.items() if r == "キーパーソン"), None)
+        _lv0 = next((n for n, r in _roles0.items() if r == "ラバーズ"), None)
+        _mlv0 = next((n for n, r in _roles0.items() if r == "メインラバーズ"), None)
+        _cand = {t for t in ({n for n, r in _roles0.items() if r == "フレンド"}
+                             | {_kp0, _lv0}) - {None}
+                 if _chars0.get(t, {}).get("alive")
+                 and _chars0.get(t, {}).get("anyaku", 0) < 1}
+        if not _cand:
+            return self._analyze_impl(view)
+        if self.p["payoff_relax_all"]:
+            return self._analyze_impl(view, _relax=_cand)   # 広い版（負の対照）
+        opt = self._analyze_impl(view, _relax=_cand)        # ①楽観パス
+        _f = opt["funded"]
+        relax: set[str] = set()
+        if "friend" in _f and opt.get("friend_target"):
+            relax.add(opt["friend_target"])
+        if "lovers" in _f and opt.get("lover"):
+            relax.add(opt["lover"])
+        if self.p["payoff_unified_kp"] and "kp" in _f and _kp0:
+            relax.add(_kp0)
+        if (self.p["payoff_unified_additive"] and self.p["role_effect_paths"]
+                and _lv0 and _mlv0 and _chars0.get(_mlv0, {}).get("alive")):
+            relax.add(_lv0)          # A-67 landed の無条件ラバーズ緩和を保持（加算的適用）
+        return self._analyze_impl(view, _relax=relax & _cand)   # ②本計算
+
+    def _analyze_impl(self, view: dict, _relax: set[str] | None = None) -> dict:
         roles = view["roles"]
         chars = {c["name"]: c for c in view["characters"]}
         keyperson = next((n for n, r in roles.items() if r == "キーパーソン"), None)
@@ -294,11 +630,13 @@ class HeuristicMastermind:
         #   ★除外（＝疑わしきは従来どおり発動）：ボード暗躍≥2系（守るべき場所／封印されしモノ／
         #     ボードX）と 僕と契約のKP暗躍≥2 は、主人公の友好能力で**暗躍を除去されうる**＝
         #     ループ終了時まで確定しない。ここを確定扱いにすると勝ち筋を自分で捨てる。
+        #   ★A-74：ルールYと「発生＝敗北」事件の対応は engine.data が単一ソース。
         loop_defeat_certain = any(
             not chars.get(n, {}).get("alive", True) for n in friends)
-        if not loop_defeat_certain and view.get("rule_y") == "未来改変プラン":
+        if not loop_defeat_certain:
             loop_defeat_certain = any(
-                e.get("event") == "incident" and e.get("name") == "蝶の羽ばたき"
+                e.get("event") == "incident"
+                and incident_defeats_protagonists(view.get("rule_y"), e.get("name"))
                 and e.get("occurs") and e.get("loop") == view.get("loop")
                 for e in view.get("history", ()))
         # ★シリアルキラー（妄想拡大ウイルスのSK化含む）と、SKが殺せば勝ちに繋がる標的
@@ -322,6 +660,9 @@ class HeuristicMastermind:
         day = view["day"]
         today_culprit = next((inc["culprit"] for inc in view["incidents"]
                               if inc["day"] == day), None)
+        # ★A-62：今日の事件名（事件側の上限会計＝不安拡大/蝶の羽ばたきの対象選択で使う）
+        today_incident = next((inc["name"] for inc in view["incidents"]
+                               if inc["day"] == day), None)
         culprits_all = {inc["culprit"] for inc in view["incidents"]}
         future_culprits = {inc["culprit"] for inc in view["incidents"] if inc["day"] > day}
         misleader = next((n for n, r in roles.items() if r == "ミスリーダー"), None)
@@ -348,6 +689,11 @@ class HeuristicMastermind:
         mm_rate = 2 if misleader else 1
         reachable_culprits: set[str] = set()
         pump_targets: list[tuple[int, str]] = []
+        # ★A-74：犯人ごとの「不安の実効供給」（事件日までに脚本家が積める上限）。
+        #   下の到達可能性の算術（rate × turns）と**同じ一次情報**をそのまま保存する
+        #   ＝不安レースの二重定義を作らない。butterfly パスの sink 容量に使う。
+        unrest_supply: dict[str, float] = {}
+        today_gainful = False   # ★A-63：今日の事件がA-38/A-56②の除外に当たらず「発生させる価値がある」か
         for inc in view["incidents"]:
             cn, cd = inc["culprit"], inc["day"]
             if cd < day:
@@ -365,14 +711,45 @@ class HeuristicMastermind:
             #   計4手を投じて効果ゼロ。★健全側＝暗躍が1つでも乗っていれば「積み増しで届く」＝除外しない。
             if inc["name"] == "遠隔殺人" and self.p["incident_payoff_gate"]:
                 _payoff_targets = (friends | {keyperson}) - {None}
+                # ★A-67：ラバーズも利得対象＝殺せば相方（メインラバーズ）に不安6が無償で
+                #   乗り、50:160の主人公殺害が起動する（50:153,159）。従来はKP/フレンドしか
+                #   数えず、両者不在の脚本（btx_bomb帯）では遠隔殺人が丸ごと勘定から落ちていた。
+                _mlv = next((n for n, r in roles.items() if r == "メインラバーズ"), None)
+                if self.p["role_effect_paths"] and _mlv and chars.get(_mlv, {}).get("alive"):
+                    _lv = next((n for n, r in roles.items() if r == "ラバーズ"), None)
+                    if _lv:
+                        _payoff_targets = _payoff_targets | {_lv}
+                # ★A-67：的は「これから作れる」なら勘定に入れる＝暗躍+2（1枚で暗躍2＝
+                #   40:152の的が即完成）が未使用なら、現在の暗躍0でも到達可能（従来の
+                #   「暗躍≥1が既に乗っている」だけでは、的を作る前に筋が消える循環だった）。
+                #   ★relaxation は**ラバーズに限る**：相方の死＝不安6が無償で乗り 50:160 が
+                #   起動する＝的を作る1枚が確実に勝ち筋へ変換される。フレンドについては
+                #   A-56②の原判定（暗躍≥1の実績が無ければ注がない）を維持する
+                #   ＝「発生させても何も起きない事件へ不安を注ぐ」退行の再発防止。
+                #   ★A-71：緩和を許す的の集合は呼び出し元（`_analyze`）が決める＝
+                #   「その的を作る計画を実際に資金化している」時だけ可能性を計上する時制統一。
+                #   _relax=None（単パス＝payoff_gate_unified=0）はA-67 landedの無条件ラバーズ緩和。
+                _p2_left = ("暗躍+2" not in (view.get("used_cards", {})
+                                             .get("mastermind", []) or []))
+                _lv2 = next((n for n, r in roles.items() if r == "ラバーズ"), None)
+
+                def _relax_ok(t: str) -> bool:
+                    if not (self.p["role_effect_paths"] and _p2_left):
+                        return False
+                    if _relax is not None:
+                        return t in _relax
+                    return t == _lv2 and bool(_mlv)
+
                 if not any(chars.get(t, {}).get("alive")
-                           and chars.get(t, {}).get("anyaku", 0) >= 1
+                           and (chars.get(t, {}).get("anyaku", 0) >= 1 or _relax_ok(t))
                            for t in _payoff_targets):
                     continue
             cc = chars.get(cn)
             th = unrest_threshold_of(cn)
             if not cc or not cc["alive"] or th is None:
                 continue
+            if cd == day:
+                today_gainful = True          # ★A-63：押し切り会計の適用可否（除外ゲート通過済み）
             if th == 0:                       # 臨界0（黒猫）は常に発生＝常に「届く」
                 reachable_culprits.add(cn)
                 pump_targets.append((cd, cn))
@@ -389,6 +766,7 @@ class HeuristicMastermind:
                 if not (mlc and mlc.get("alive") and cc.get("area")
                         and mlc.get("area") == cc["area"]):
                     rate = 1
+            unrest_supply[cn] = max(unrest_supply.get(cn, 0.0), float(rate * turns))
             if cc["unrest"] < th and cc["unrest"] + rate * turns >= th:
                 reachable_culprits.add(cn)
                 pump_targets.append((cd, cn))
@@ -419,6 +797,96 @@ class HeuristicMastermind:
             if _tc and _tc["alive"] and _tth is not None and (
                     _tc["unrest"] >= _tth or today_culprit in reachable_culprits):
                 fires_today = True
+
+        # ★A-63（2026-07-27・目視検死『蝶レース再審』）：事件日の押し切り会計。
+        #   従来は不安+1カード（過剰置き抑制）とミスリーダー能力（belowゲート）が両方
+        #   「臨界到達」で停止し、フェイズ順で必ず後出しできる主人公の冷却（行動解決の
+        #   重ね札1枚＋主人公能力フェイズの不安除去）に事件フェイズ直前で外されていた
+        #   （btx_future 3日級L1×8の真因＝CF 8/8反転・s0/s3は sim/mate 完全列挙で
+        #   全22,782応手詰みを証明済み）。当日は例外＝**臨界＋冷却容量**まで同日ペアで押す。
+        #   押し切り条件（公開情報のみ・最悪ケース保証）：
+        #     u0 + ml_ok - n_cool ≥ th
+        #   …… 主人公が重ね札で自カードを相殺しても（相殺されなければカード分が乗る＝
+        #   さらに有利）、ML能力+1と解禁済み冷却能力(-1×n_cool)の差し引きで事件フェイズに
+        #   臨界以上を維持できる。n_cool＝友好≥必要数の「軽量不安除去」能力の全数
+        #   （位置不問＝主人公は移動札で同日搬入できるため過大側に数える＝健全）。
+        #   already_safe（u0-1-n_cool≥th＝押さなくても外されない）なら従来の抑制のまま＝
+        #   資源節約。カウンター全除去級（カウンター操作kind）が解禁済みなら押さない。
+        # ★主人公側の冷却エンジンの公開会計（A-63/A-64共通材料）：解禁済み（友好≥必要数）の
+        #   「軽量不安除去」能力の担い手と本数。_n_cool＝能力の本数（A-63の押し切り式）・
+        #   unlocked_coolers＝担い手の名前（A-64②の隔離対象）。_wipe＝カウンター全除去級の解禁。
+        _n_cool, _wipe = 0, False
+        unlocked_coolers: set[str] = set()
+        _cool_abils: list[tuple[str, str]] = []   # ★A-77：(担い手, 能力名)＝クラス限定の判定用
+        for _n, _cc2 in chars.items():
+            if not _cc2.get("alive"):
+                continue
+            for _ab in goodwill_abilities_of(_n) or []:
+                if _cc2.get("goodwill", 0) < _ab["hearts"]:
+                    continue
+                _k = ability_kind(_n, _ab["name"])
+                if _k == "軽量不安除去":
+                    _n_cool += 1
+                    unlocked_coolers.add(_n)
+                    _cool_abils.append((_n, _ab["name"]))
+                elif _k == "カウンター操作":
+                    _wipe = True
+
+        def _cool_reaching(target: str) -> int:
+            """★A-77：`target` を実際に冷やせる解禁済み能力の本数。
+
+            対象クラスが限定された能力（「学生の不安除去」「学生の不安操作」）は、対象が
+            その属性でなければ空撃ち＝冷却容量に数えない（KB: 30 属性列。判定は
+            engine.data.ability_class_target_alive＝A-23/B-24 と同一の単一ソース）。
+            エリア一致は要求しない（移動で同日搬入されうる＝健全側に過大で数える）。
+            """
+            if not self.p["frail_cool_class"]:
+                return _n_cool
+            from engine.data import ability_class_target_alive
+            return sum(1 for _u, _nm in _cool_abils
+                       if ability_class_target_alive(_u, _nm, (target,)))
+
+        push_culprit = None
+        _push_scope_ok = True
+        if self.p["push_rule_y_decisive_only"]:
+            # ★既定＝発生自体がルールY敗北（未来改変プラン×蝶の羽ばたき）の日だけ押す。
+            #   ★A-74：対応表は engine.data.RULE_Y_INCIDENT_DEFEAT が単一ソース（判定は同値）。
+            _push_scope_ok = any(
+                inc["day"] == day and inc["culprit"] == today_culprit
+                and incident_defeats_protagonists(view.get("rule_y"), inc["name"])
+                for inc in view["incidents"])
+        if self.p["push_day_gate"] and today_culprit and today_gainful:
+            _pc = chars.get(today_culprit)
+            _pth = unrest_threshold_of(today_culprit)
+            if _pc and _pc["alive"] and _pth is not None and _pth >= 1:
+                _mlc = chars.get(misleader) if misleader else None
+                _ml_ok = bool(_mlc and _mlc.get("alive") and (
+                    misleader == today_culprit
+                    or (_mlc.get("area")
+                        and _mlc.get("area") == _pc.get("area"))))
+                _u0 = _pc["unrest"]
+                if (_push_scope_ok and not _wipe
+                        and _u0 + (1 if _ml_ok else 0) - _n_cool >= _pth
+                        and _u0 - 1 - _n_cool < _pth):
+                    push_culprit = today_culprit
+                # ★A-77：折られやすい同室供給（詳細＝MM_PARAMS "frail_supply_push"）。
+                #   ML能力の+1を**0に割り引き**、札の不安+1を第2経路として併置する。
+                #   保証式（相手が冷却札1枚を重ねても・MLを引き剥がしても成立する側）：
+                #     u0 − (この犯人を冷やせる解禁済み能力の本数) ≥ 臨界
+                #   ＋「押さなくても外されない」局面は従来どおり抑制（資源節約）：
+                #     u0 − 1 − (同上) < 臨界
+                #   ＝整数なので**u0 − 冷却 == 臨界ちょうど**の日だけ発火する（極めて狭い）。
+                elif (self.p["frail_supply_push"] and not _wipe and _ml_ok
+                        and misleader != today_culprit
+                        and (not self.p["frail_push_accounted_only"]
+                             or today_incident in _ACCOUNTED_INCIDENTS)):
+                    _room = [_n2 for _n2, _c2 in chars.items()
+                             if _c2.get("alive") and _n2 != today_culprit
+                             and _c2.get("area") and _c2.get("area") == _pc.get("area")]
+                    if _room == [misleader]:
+                        _nc = _cool_reaching(today_culprit)
+                        if _u0 - _nc >= _pth and _u0 - 1 - _nc < _pth:
+                            push_culprit = today_culprit
 
         # 脅威キャラ＝友好能力で勝ち筋を崩す/情報を開示するキャラ（友好禁止・殺人事件の的）。
         # ★threat_hearts＝その脅威能力の必要友好数（最小）。友好禁止の要否判断に使う
@@ -484,6 +952,9 @@ class HeuristicMastermind:
             elif e.get("event") == "death" and e.get("name") == keyperson:
                 kp_died_before = True
         kp_blocked = kp_died_before or kp_kinshi >= 2
+        # ★A-61：KPへの暗躍禁止の被覆実績（+2温存ゲート用）。kp_blocked と別に持つ＝
+        #   kp_blocked はキラー不在時に強制 False へ戻される（契約等）ため、被覆実績そのものを残す。
+        kp_guarded = kp_kinshi >= 2
         board_guarded = board_kinshi >= 2   # 相手はボードをほぼ毎回守る打ち手
         killer_guarded = killer_kinshi >= 2
         # キラー経路が使えない（キラー不在/死亡）なら切替しない＝キーパーソン経路を維持
@@ -502,13 +973,24 @@ class HeuristicMastermind:
         #   カードは無駄＝終盤に especially 効く）。
         #   ★二正面圧力＝カバーシナリオ：2本が同時に賄えるなら両方生かす。主人公の暗躍禁止は
         #   1枚/ターン＝2経路を同時には塞げない（1本に絞ると相手のトリアージ一点読みで詰む）。
+        #   ★A-73：残供給は下（`_supply_of`）で**実効供給**として計算する（旧＝日数×2）。
         ba = view.get("board_anyaku", {})
-        supply = days_left * 2
         path_costs: dict[str, int] = {}
+        # ★A-73：`path_costs` は「構造コスト（実際に置く暗躍/手数の個数）」に**リスク割増**
+        #   （守られ +2／読まれ +2.5×P／事件依存 +0.5）を足した**実効コスト**＝単位が混ざる。
+        #   実効供給（暗躍の実枚数）と直接比べられるのは構造コストの方＝別枠で残す。
+        #   実効コストは従来どおり**順位づけ**（どの筋が得か）に使う。
+        path_costs_raw: dict[str, float] = {}
+        # 「守られ」割増だけは**観測された遮断**（暗躍禁止の当て先実績2回以上）＝供給の減算に
+        #   相当する。読まれ/事件依存の割増（推定リスク）とは性質が違うので別枠で持つ。
+        _guard_add: dict[str, float] = {}
+        _dep_add: dict[str, float] = {}      # 事件依存の割増（cost_incident_dep）
         if goal_boards:
             path_costs["board"] = max(0, min(2 - ba.get(b, 0) for b in goal_boards))
+            path_costs_raw["board"] = path_costs["board"]
             if board_guarded:
                 path_costs["board"] += self.p["cost_board_guarded"]  # 守られ＝実効コスト増
+                _guard_add["board"] = self.p["cost_board_guarded"]
         # ★KP暗躍パス：殺人計画（KP暗躍≥2＋キラーが同エリアでKP殺害）はキラー必須。だが
         #   僕と契約しようよ！は「KP暗躍≥2」だけで即勝ち＝キラー不要（テスター指摘 2026-07-11：
         #   キラー不在の僕と契約でmmがKPに暗躍せずボード暗躍に固執していた。sim/effects.py:574）。
@@ -516,10 +998,115 @@ class HeuristicMastermind:
         if keyperson and not kp_blocked and (
                 (killer and chars.get(killer, {}).get("alive")) or _contract_win):
             path_costs["kp"] = max(0, 2 - chars[keyperson]["anyaku"])
+            path_costs_raw["kp"] = path_costs["kp"]
         if killer and chars.get(killer, {}).get("alive"):
             path_costs["killer4"] = max(0, 4 - chars[killer]["anyaku"])
+            path_costs_raw["killer4"] = path_costs["killer4"]
             if killer_guarded:
                 path_costs["killer4"] += self.p["cost_killer_guarded"]
+                _guard_add["killer4"] = self.p["cost_killer_guarded"]
+        # ★A-67：役職効果の勝ち筋（lovers / friend）。詳細＝MM_PARAMS "role_effect_paths"。
+        lover = next((n for n, r in roles.items() if r == "ラバーズ"), None)
+        mainlover = next((n for n, r in roles.items() if r == "メインラバーズ"), None)
+        kill_costs: dict[str, float] = {}
+        friend_target = None      # 的にする（最も安く殺せる）フレンド1人
+        kill_inc_culprits: set[str] = set()   # 役職効果パスの殺害手段になる事件の犯人
+        if self.p["role_effect_paths"]:
+            # 今ループ「これから発火しうる」殺害系事件（犯人生存×不安レースで臨界に届く）。
+            _remote = False
+            for inc in view["incidents"]:
+                if inc["day"] < day:
+                    continue
+                cu = chars.get(inc["culprit"])
+                cth = unrest_threshold_of(inc["culprit"])
+                if not (cu and cu["alive"] and cth is not None):
+                    continue
+                if not (inc["culprit"] in reachable_culprits or cu["unrest"] >= cth):
+                    continue      # §1d：不安レースで届かない事件は勘定に入れない
+                if inc["name"] != "遠隔殺人":
+                    continue
+                _remote = True
+                # ★A-67：この事件は役職効果パスの「殺害手段」＝発火させること自体が
+                #   勝ち筋の一部。犯人の不安をパスと同じ優先度で資金化する（下の
+                #   set_unrest_killpath）。従来は汎用の犯人不安(40-60)止まりで、
+                #   同じパスの暗躍(98)に毎日負けて事件が永久に発火しなかった。
+                if cu["unrest"] < cth:
+                    kill_inc_culprits.add(inc["culprit"])
+
+            def _kill_cost(name: str) -> float | None:
+                """name を今ループ殺すのに要る手数（暗躍個数≒カード枚数）。不能は None。"""
+                c0 = chars.get(name)
+                if not (c0 and c0["alive"]) or ROLE_CLAUSE_ABILITY.get(
+                        roles.get(name, "")) == "不死":
+                    return None      # 不死は殺害不成立（00:175 / 60:A26）
+                # ★経路は遠隔殺人（暗躍2の的づくり＝40:152）だけを数える。
+                #   SK配達・殺人事件の同席は**移動1手**で安く見えるが、主人公の防御語彙が
+                #   最も厚い経路（B-71配達ピン/B-76退避/B-81昇格）＝「安いが塞がれている」
+                #   典型で、これを path_costs に載せると盤線など生きた筋を捨てて突っ込む
+                #   （実測：btx_seal 3.3→1.0・btx_lovers 3.0→1.1 の退行）。両者は
+                #   A-64が**機会があれば指す**移動採点として実装済み＝戦略パス化は不要。
+                #   病院の事件も A-18 が病院をゴール盤に載せる経路で既に会計済み。
+                if _remote:
+                    return max(0, 2 - c0["anyaku"])
+                return None
+
+            for _n in set(friends) | {lover}:
+                if _n:
+                    _kc = _kill_cost(_n)
+                    if _kc is not None:
+                        kill_costs[_n] = _kc
+            # ①lovers＝メインラバーズ主人公殺害（50:160）。相方の死で不安6が無償（50:153,159）。
+            if mainlover and chars.get(mainlover, {}).get("alive"):
+                _need_an = max(0, 1 - chars[mainlover]["anyaku"])
+                if chars[mainlover]["unrest"] >= 3:
+                    path_costs["lovers"] = _need_an          # 不安は既に足りている
+                    path_costs_raw["lovers"] = _need_an
+                elif lover and lover in kill_costs:
+                    path_costs["lovers"] = (kill_costs[lover] + _need_an
+                                            + self.p["cost_incident_dep"])
+                    path_costs_raw["lovers"] = kill_costs[lover] + _need_an
+                    _dep_add["lovers"] = self.p["cost_incident_dep"]
+            # ②friend＝フレンド除去（40:130）。最も安い1人で足りる＝その1人だけを的にする。
+            _fk = sorted((kill_costs[n], n) for n in friends if n in kill_costs)
+            if _fk:
+                path_costs["friend"] = _fk[0][0] + self.p["cost_incident_dep"]
+                path_costs_raw["friend"] = _fk[0][0]
+                _dep_add["friend"] = self.p["cost_incident_dep"]
+                friend_target = _fk[0][1]
+        # ★A-74：未来改変プラン族の勝ち筋（詳細＝MM_PARAMS "a74_butterfly_path"）。
+        #   ①butterfly＝「発生そのものが敗北条件」の事件（KB: 50:45-47）。コストの通貨は
+        #     **不安**（犯人を臨界へ運ぶ手数）＝暗躍建ての他パスと sink の kind で分ける。
+        butterfly_target = None      # 的にする（最も安く発生させられる）犯人1人
+        butterfly_day = None
+        _decisive_inc = rule_y_decisive_incident(view.get("rule_y"))
+        if self.p["a74_butterfly_path"] and _decisive_inc and not loop_defeat_certain:
+            _bf: list[tuple[float, int, str]] = []
+            for inc in view["incidents"]:
+                if inc["name"] != _decisive_inc or inc["day"] < day:
+                    continue
+                _bc = chars.get(inc["culprit"])
+                _bth = unrest_threshold_of(inc["culprit"])
+                if not (_bc and _bc["alive"] and _bth is not None):
+                    continue
+                # §1d と同じ規律＝不安レースで届かない事件は勘定に入れない
+                if not (inc["culprit"] in reachable_culprits or _bc["unrest"] >= _bth):
+                    continue
+                _bf.append((float(max(0, _bth - _bc["unrest"])), inc["day"],
+                            inc["culprit"]))
+            if _bf:
+                _bf.sort()
+                path_costs["butterfly"] = _bf[0][0] + self.p["cost_incident_dep"]
+                path_costs_raw["butterfly"] = _bf[0][0]
+                _dep_add["butterfly"] = self.p["cost_incident_dep"]
+                butterfly_day, butterfly_target = _bf[0][1], _bf[0][2]
+        #   ②tt＝タイムトラベラーの敗北宣言（KB: 50:128）。脚本家の手数コストは0だが
+        #     前進手も無い（友好禁止は無視＝50:127）＝既定では列挙しない。
+        tt_target = None
+        if self.p["a74_tt_path"] and tt and chars.get(tt, {}).get("alive"):
+            if chars[tt]["goodwill"] <= TT_DEFEAT_GOODWILL_MAX:
+                path_costs["tt"] = 0.0
+                path_costs_raw["tt"] = 0.0
+                tt_target = tt
         # ★M2 相手が知らない筋で決める（ユーザー知見 2026-07-09）：主人公のbelief（公開情報
         #   のみ＝神視点不使用）で、各勝ち筋の要役職・ルールがどれだけ特定されているかを測り、
         #   バレ度を実効コストへ加算（バレた筋は守られる＝高くつく）。funded選択が
@@ -548,12 +1135,309 @@ class HeuristicMastermind:
             except Exception:  # noqa: BLE001  belief不能（拡張キャスト等）＝補正なしで続行
                 belief_base = None
 
+        # ★A-73：実効供給（詳細＝MM_PARAMS "supply_model"）。
+        #   実効供給 ＝ (札の実供給) + (能力/ルール/事件による供給) − (主人公の遮断の期待値)。
+        #   ★供給は**どこに置けるか**で違う＝勝ち筋の集合ごとに評価する：
+        #     - 札（暗躍+1／暗躍+2）＝キャラにもボードにも置ける（KB: 10:38-39, 10:70）。
+        #       残存判定は `used_cards["mastermind"]`（A-71 の `_p2_left` と同じ一次情報）。
+        #     - クロマク＝**同一エリアのキャラ1人 or 自分の居るボード**（KB: 40:86 / 50:115）。
+        #       1ターン1回＝共有プール（複数の筋に二重計上しない）。暗躍禁止で止まらない（10:65）。
+        #     - 不穏な噂＝**任意のボード**に+1・1/loop（KB: 40:61 / 50:75）＝ボード専用。
+        #     - 事件：行方不明＝任意ボードに+1（KB: 40:153）／邪気の汚染＝神社+2（KB: 50:199）／
+        #       不安拡大＝任意1人に+1（KB: 40:149）＝キャラ専用。
+        #     - 黒猫の神社+1（KB: 30:75 特性1「各ループ開始時に神社に暗躍1」）は
+        #       **ループ開始時に適用済み**＝`board_anyaku` に既に入っている＝将来供給に足さない
+        #       （足すと二重計上）。
+        _p2_left_s = ("暗躍+2" not in (view.get("used_cards", {})
+                                       .get("mastermind", []) or []))
+        _card_supply = days_left + (2 if _p2_left_s else 0)
+        _km_c = chars.get(kuromaku) if kuromaku else None
+        _km_alive = bool(_km_c and _km_c.get("alive"))
+        _km_forbid = forbidden_of(kuromaku) if _km_alive else set()
+        _rumor_left = (("不穏な噂" in {view.get("rule_x"), view.get("rule_x2")})
+                       and not view.get("rumor_used", False))
+        _inc_board = _inc_char = _inc_shrine = 0
+        _inc_board_reach: list[frozenset] = []   # ★A-78：行方不明1件ごとの供給可能ボード
+        for _isup in view["incidents"]:
+            if _isup["day"] < day:
+                continue
+            _cus = chars.get(_isup["culprit"])
+            _cts = unrest_threshold_of(_isup["culprit"])
+            if not (_cus and _cus["alive"] and _cts is not None):
+                continue
+            # §1d と同じ規律＝不安レースで届かない事件は勘定に入れない
+            if not (_isup["culprit"] in reachable_culprits or _cus["unrest"] >= _cts):
+                continue
+            if _isup["name"] == "行方不明":
+                _inc_board += 1
+                _inc_board_reach.append(
+                    missing_incident_boards_from_view(view, _isup["culprit"]))
+            elif _isup["name"] == "邪気の汚染":
+                _inc_shrine += 2
+            elif _isup["name"] == "不安拡大":
+                _inc_char += 1
+
+        def _inc_board_for(areas) -> float:
+            """★A-78（2026-07-30）：行方不明の供給が `areas` のどれかに**実際に届く**件数。
+
+            行方不明は「犯人を任意のボードへ移動→**犯人のいるボード**に暗躍1」（KB: 40:153/50）で、
+            E-2 の公式裁定によりこの移動先に**犯人の禁止エリアは選べない**（KB: 00 / 40 事件まわりの
+            注意）。∴「任意のボードへ+1」ではなく「**犯人が行けるボードへ+1**」＝
+            ゴール板が犯人の禁止エリアなら、その事件はその板の脅威に**ならない**。
+            例＝サラリーマン（禁止＝学校）が犯人／守るべき場所（学校≥2）＝供給0。
+
+            ★同型の先例＝すぐ上の `_km_forbid`（クロマクの供給を禁止エリアで絞る `_km_reaches`）。
+            ★他の供給源に同じ穴は無い（全数確認＝監査doc §2）：不穏な噂＝任意ボード（移動を伴わない）／
+              邪気の汚染＝神社固定（移動しない・KB: 50:199）／不安拡大＝キャラ対象（KB: 40:149）。
+            """
+            if not areas:
+                return 0.0
+            if not self.p["supply_missing_forbidden"]:
+                return float(_inc_board)          # 旧挙動（アブレーション用）
+            _tgt = frozenset(areas)
+            return float(sum(1 for _r in _inc_board_reach if _r & _tgt))
+
+        if A78_PROBE is not None:                      # 計測フック（既定 None＝本番経路は無変更）
+            # ★トグル（supply_missing_forbidden）に関わらず**規則どおりの値**を渡す＝
+            #   アブレーション（旧挙動）で回しても「誤って数えた件数」が測れる。
+            _tgt0 = frozenset(goal_boards)
+            A78_PROBE(view, goal_boards, _inc_board,
+                      float(sum(1 for _r in _inc_board_reach if _r & _tgt0)))
+
+        def _path_targets(p: str) -> list[tuple[str, str]]:
+            """勝ち筋 p が暗躍を届けたい先 (kind, name)。kind＝board/char。
+
+            ★A-74：butterfly/tt は**暗躍を届けない**（不安レース／脚本家の手数ゼロ）＝空。
+            """
+            if p == "board":
+                return [("board", b) for b in goal_boards]
+            if p in ("butterfly", "tt"):
+                # ★A-74：`_supply_of`（supply_alloc=0 の旧スカラー会計）は暗躍建てのまま＝
+                #   butterfly の不安需要は表現できない。既定は alloc=1（`_sink_of`/
+                #   `_cap_reaching` の通貨分離）なので影響なし＝旧トグルの既知の限界として明記。
+                return []
+            _one = {"kp": keyperson, "killer4": killer,
+                    "lovers": mainlover, "friend": friend_target}.get(p)
+            return [("char", _one)] if _one else []
+
+        def _km_reaches(kind: str, name: str) -> bool:
+            """クロマクがその対象へ暗躍を置けるか（現位置 or 移動可能なエリア）。"""
+            if not _km_alive:
+                return False
+            if kind == "board":
+                return _km_c.get("area") == name or name not in _km_forbid
+            _c0 = chars.get(name)
+            if not (_c0 and _c0.get("alive")):
+                return False
+            _a0 = _c0.get("area")
+            return bool(_a0) and (_km_c.get("area") == _a0 or _a0 not in _km_forbid)
+
+        _model = int(self.p["supply_model"])
+
+        def _supply_of(paths) -> float:
+            if _model <= 0:
+                return float(days_left * 2)          # 旧挙動（A-73前）へ完全復帰
+            s = float(_card_supply)
+            if _model >= 3:
+                _blk = self.p["supply_block_per_day"] * days_left
+                # カルティストが生きていれば暗躍禁止は無視できる（KB: 40:103 / 50:121）
+                if cultist and chars.get(cultist, {}).get("alive"):
+                    _blk = 0.0
+                s -= min(_blk, float(_card_supply))
+            if _model >= 2:
+                _tg = [t for p in paths for t in _path_targets(p)]
+                if _tg:
+                    if any(_km_reaches(k, n) for k, n in _tg):
+                        s += days_left * self.p["supply_kuromaku_rate"]
+                    _has_board = any(k == "board" for k, _ in _tg)
+                    if _has_board:
+                        # ★A-78：行方不明は犯人が行けるボードにしか供給できない
+                        s += ((1 if _rumor_left else 0)
+                              + _inc_board_for({n for k, n in _tg if k == "board"}))
+                        if any(n == "神社" for k, n in _tg if k == "board"):
+                            s += _inc_shrine
+                    if any(k == "char" for k, _ in _tg):
+                        s += _inc_char
+            return s
+
+        # ★A-73：資金ゲートに使うコスト。supply_gate_raw=1 なら**構造コスト**（実際に置く
+        #   個数）で「届くか」を判定し、リスク割増は順位づけだけに使う＝単位を揃える。
+        #   0 なら従来どおり実効コストで判定（供給モデルだけを差し替えた形）。
+        _gmode = int(self.p["supply_gate_raw"])
+
+        def _gate(p: str) -> float:
+            if _gmode <= 0:
+                return float(path_costs[p])
+            if _gmode >= 3:
+                # 3＝事件依存の割増だけ資金判定から外す（＝旧ゲートに最も近い保守形）
+                return float(path_costs[p]) - _dep_add.get(p, 0.0)
+            v = float(path_costs_raw.get(p, path_costs[p]))
+            if _gmode >= 2:
+                v += _guard_add.get(p, 0.0)   # 観測された遮断は資金判定にも効かせる
+            return v
+
+        # ★A-73b：供給の**対象別・排他配分**（詳細＝MM_PARAMS "supply_alloc"）。
+        #   sink＝暗躍を届ける具体的な先。`areas` はクロマクがそれを賄うために立つべき
+        #   エリアの候補（KB: 40:86 / 50:115＝同一エリアのキャラ1人 or 自分のいるボード）。
+        _alloc = int(self.p["supply_alloc"]) if _model >= 2 else 0
+        _km_move = self.p["supply_km_move_cost"]
+
+        def _sink_of(p: str, board: str | None = None) -> dict:
+            # ★A-74：butterfly＝**不安**建ての sink（暗躍の source は届かない＝通貨が違う）。
+            #   容量は unrest_supply（reachable の算術と同一の一次情報）。
+            if p == "butterfly":
+                return {"kind": "unrest", "areas": set(), "shrine": False,
+                        "km": False, "who": butterfly_target}
+            if p == "tt":
+                # 脚本家の手数コスト0＝需要0＝どの source も要らない（KB: 50:128）。
+                return {"kind": "none", "areas": set(), "shrine": False, "km": False}
+            if p in ("board", "decoy"):
+                cand = {board} if board else set(goal_boards)
+                # ★偽装ボードはクロマク供給の対象にしない：A-48 の情報コストゲート
+                #   （`kuromaku_progress_gate`）が「生きた勝ち筋を前進させない発動」を
+                #   filler へ落とす＝偽装板へクロマクは実際には打たない（札で育てる）。
+                return {"kind": "board", "areas": cand, "shrine": "神社" in cand,
+                        "km": p != "decoy"}
+            _one = {"kp": keyperson, "killer4": killer,
+                    "lovers": mainlover, "friend": friend_target}.get(p)
+            _c0 = chars.get(_one) if _one else None
+            if not (_c0 and _c0.get("alive") and _c0.get("area")):
+                # 対象不在＝能力/事件の供給は乗らない（札だけが届く）
+                return {"kind": "none", "areas": set(), "shrine": False, "km": False}
+            return {"kind": "char", "areas": {_c0["area"]}, "shrine": False, "km": True}
+
+        def _km_stand(sink: dict) -> str | None:
+            """その sink を賄うためにクロマクが立つエリア（立てないなら None）。
+            現在地が候補にあれば現在地＝移動不要を優先する。"""
+            if not (_km_alive and sink.get("km")):
+                return None
+            _here = _km_c.get("area")
+            cand = [a for a in sorted(sink["areas"])
+                    if a and (a == _here or a not in _km_forbid)]
+            if not cand:
+                return None
+            return _here if _here in cand else cand[0]
+
+        def _km_cap(sinks) -> float:
+            """sink群に対するクロマク供給の上限＝1ターン1回の**共有プール**。
+
+            ★排他性の核：クロマクは1ターンに**1つのエリアにしか立てない**（KB: 40:86/50:115＝
+              同一エリアのキャラ1人 or 自分のいるボード）。sink群が**複数のエリア**に散って
+              いれば、その間を往復しないと両方には注げない＝切り替え1回につき
+              `supply_km_move_cost` を引く。
+            ★**最初の1回の寄せは引かない**（保守側）。2×2盤では移動カード1枚で任意のエリアへ
+              行け、行動解決フェイズは脚本家能力フェイズより前（KB: 00:104-109）＝
+              「寄せた当日に置ける」＝**素の到達遅延は0日**だから。
+              （実測でも初回寄せを引く形は両ベンチで1局も動かず＝この補正は空振り）。
+            """
+            areas = {a for a in (_km_stand(s) for s in sinks) if a}
+            if not areas:
+                return 0.0
+            sw = len(areas) - 1
+            return max(0.0, days_left * self.p["supply_kuromaku_rate"] - _km_move * sw)
+
+        def _cap_reaching(items) -> float:
+            """items（=[(需要, sink)]）のどれかに届く source の容量合計。"""
+            # ★A-74：不安建ての sink（butterfly）は**暗躍の source が1つも届かない**＝
+            #   別通貨として分離して足す（Gale–Hoffman の部分集合判定はこれで正しく働く）。
+            #   容量＝unrest_supply（＝mm_rate×事件日までの残ターン。reachable と同一算術）。
+            #   ★不安+1 は手札に2枚あり同一ターンに**別々の対象**へ置ける（同一対象への
+            #   重ね置きのみ不可＝sim/legal DUP_TARGET）＝sink ごとに独立に数えてよい。
+            _un = [s for _d, s in items if s["kind"] == "unrest"]
+            _cap_un = sum(unrest_supply.get(s.get("who"), 0.0) for s in _un)
+            items = [(d, s) for d, s in items if s["kind"] != "unrest"]
+            if not items:
+                return _cap_un
+            sinks = [s for _d, s in items]
+            dmax = max(d for d, _s in items)
+            cap = _cap_un + float(days_left)             # 暗躍+1（毎ターン1枚・対象自由）
+            if _p2_left_s:
+                # 暗躍+2 は**札1枚＝1つの対象**にしか置けない（分割不可）＝流せるのは
+                # 高々「最大需要の1本ぶん」。KB: 10 暗躍+2 (1/loop)。
+                cap += min(2.0, dmax)
+            cap += _km_cap(sinks)
+            _bd = [d for d, s in items if s["kind"] == "board"]
+            if _bd:
+                cap += (1.0 if _rumor_left else 0.0)     # 噂＝任意ボード（KB: 40:61/50:75）
+                # ★A-78：行方不明＝**犯人が移動できるボード**にだけ+1（KB: 40:153＋E-2 公式裁定）。
+                #   sink群の候補ボードのどれかに届く事件だけを容量に数える。
+                cap += _inc_board_for(
+                    set().union(*(s["areas"] for _d, s in items if s["kind"] == "board")))
+            _sh = [d for d, s in items if s["shrine"]]
+            if _sh and _inc_shrine:
+                cap += min(float(_inc_shrine), max(_sh))  # 邪気の汚染＝神社限定（KB: 50:199）
+            if any(s["kind"] == "char" for s in sinks):
+                cap += float(_inc_char)                  # 不安拡大＝キャラ限定（KB: 50:196）
+            return cap
+
+        def _feasible(items) -> bool:
+            """Gale–Hoffman（Hallの一般形）：全ての非空部分集合Tで
+            Σ需要(T) ≤ Σ容量(Tのどれかに届く source) なら**排他的に配分できる**。"""
+            n = len(items)
+            for mask in range(1, 1 << n):
+                sub = [items[i] for i in range(n) if mask >> i & 1]
+                if sum(d for d, _s in sub) > _cap_reaching(sub) + 1e-9:
+                    return False
+            return True
+
+        def _fits(paths) -> bool:
+            if not _alloc:
+                return sum(_gate(p) for p in paths) <= _supply_of(tuple(paths))
+            return _feasible([(_gate(p), _sink_of(p)) for p in paths])
+
+        def _decoy_fits(board: str, dcost: float, main: str) -> bool:
+            """偽装ボードを育てる予算があるか。
+
+            alloc=1＝A-73と同じ比較範囲（本命1本＋偽装）を、source別の排他配分で判定。
+            alloc≥2＝**funded 全本＋偽装**で判定（二正面＋偽装＝三正面に資金を出さない）。
+            """
+            if main not in path_costs:
+                return False
+            if not _alloc:
+                return float(_gate(main)) + dcost <= _supply_of((main,))
+            base = ([(_gate(p), _sink_of(p)) for p in sorted(funded) if p in path_costs]
+                    if _alloc >= 2 else [(_gate(main), _sink_of(main))])
+            return _feasible(base + [(float(dcost), _sink_of("decoy", board))])
+
         _ranked = [p for p, c in sorted(path_costs.items(), key=lambda kv: kv[1])
-                   if c <= supply]
+                   if _fits((p,))]
         funded: set[str] = set(_ranked[:1])
-        if (len(_ranked) >= 2
-                and path_costs[_ranked[0]] + path_costs[_ranked[1]] <= supply):
+        if len(_ranked) >= 2 and _fits((_ranked[0], _ranked[1])):
             funded.add(_ranked[1])
+        supply = _supply_of(tuple(sorted(path_costs)))   # 報告/デバッグ用の代表値
+        # ★A-67：役職効果パス（lovers/friend）は**二正面の副軸にはしない**。
+        #   主人公の防御語彙が最も厚い領域（配達ピン/退避/昇格）に資源を分散させると、
+        #   生きている本線（kp等）まで細って共倒れになる（実測：3日 random_FS#14 が
+        #   kp本線と friend の同時funding で 2→1 に退行）。本線が**無い or 塞がれている**
+        #   時の代替＝btx_bomb帯（盤単線が毎ターン1枚で完封される）が本来の適用場面。
+        _ROLE_PATHS = {"lovers", "friend"}
+        if self.p["role_effect_paths"] and (_ROLE_PATHS & funded):
+            _classic = [p for p in _ranked if p not in _ROLE_PATHS]
+            # ★盤線の「見かけ倒れ」検出：ゴール盤への供給が**打ち消せるカード暗躍だけ**
+            #   （カルティスト不在×ゴール盤に立てるクロマク不在×噂は1/loop）なら、
+            #   主人公は暗躍禁止1枚/ターンで恒久的に完封できる＝残カウンター数が示すより
+            #   はるかに高い実効コスト。btx_bomb帯（前監査が「脚本の性質」と誤判定した10局）が
+            #   まさにこれ＝この時は役職効果パスへ乗り換えるのが正着（CF 10/10反転）。
+            _board_thin = False
+            if _classic == ["board"] or (_classic and _classic[0] == "board"):
+                _cu = chars.get(cultist) if cultist else None
+                _km = chars.get(kuromaku) if kuromaku else None
+                _has_pen = bool(
+                    (_cu and _cu.get("alive"))
+                    or (_km and _km.get("alive")
+                        and (_km.get("area") in goal_boards
+                             or any(g not in forbidden_of(kuromaku) for g in goal_boards))))
+                _board_thin = not _has_pen
+            _blocked = (board_guarded or kp_blocked or killer_guarded or _board_thin)
+            if _classic and not _blocked:
+                # 本線が生きている＝役職効果パスは本線より安い時だけ（＝第1位）残す
+                funded -= {p for p in _ROLE_PATHS
+                           if _ranked and _ranked[0] != p}
+            elif _classic and _blocked and _classic[0] not in funded:
+                # ★塞がれた本線は資金を降ろさない（§1i＝バレたルートへの配置は拘束として
+                #   実手・A-57＝覆われ続けている盤には貫通(+2)を優先）。役職効果パスは
+                #   その**二正面の相方**として足す＝本線を降ろして乗り換えるのではない。
+                funded.add(_classic[0])
 
         # ★勝ち筋の曖昧性分類（カバーストーリー統一モデル・ユーザー共同設計 2026-07-09）：
         #   評価敗北系（board＝ボード条件。病院KP死も同日複数死で紛れる＝boardに含む）＝
@@ -617,7 +1501,9 @@ class HeuristicMastermind:
             if decoy_board is not None:
                 _dcost = max(0, 2 - ba.get(decoy_board, 0))
                 # 予算：本命の残コスト＋偽装の残コストが残供給に収まるときだけ育てる
-                decoy_funded = path_costs.get("board", 99) + _dcost <= supply
+                # ★A-73b：alloc時は**funded 全本＋偽装**で排他配分できる時だけ（従来は本命
+                #   1本としか比べておらず、二正面＋偽装＝三正面に資金が出ていた）。
+                decoy_funded = _decoy_fits(decoy_board, _dcost, "board")
         # ★KP勝ち筋のカバー（ユーザー知見 2026-07-12）：本命がKP暗躍（僕と契約＝KP暗躍≥2単独／
         #   殺人計画＝KPをキラーが殺害＝KP暗躍≥2必須）のとき、主人公に「板で来る」と誤認させる
         #   偽装ボードを並行育成し、暗躍禁止1枚/ターンを板へ誘導してKP暗躍を通す。単線のKP暗躍は
@@ -641,7 +1527,7 @@ class HeuristicMastermind:
                                     if b not in goal_boards and b != "病院"), None)
                 if decoy_board is not None:
                     _dcost = max(0, 2 - ba.get(decoy_board, 0))
-                    decoy_funded = path_costs.get("kp", 99) + _dcost <= supply
+                    decoy_funded = _decoy_fits(decoy_board, _dcost, "kp")
 
         # ★ゴールボードの暗躍を剥がせる主人公側の役が居るか（居なければ2で敗北確定＝
         #   それ以上（暗躍4等）積むのは無駄。ユーザー指摘 2026-07-06）。
@@ -674,10 +1560,26 @@ class HeuristicMastermind:
         #   暗躍を供給できない。かつ board_x はループ開始時の初期エリアで確定
         #   （sim/state.prepare_loop・rules/50:52）＝ウィッチのその後の位置は敗北条件に無関係。
         #   よってウィッチを board_x へ戻す移動は純粋な札の無駄＝この選好はクロマク限定にする。
-        board_x = view.get("rule_y_board_x") if ry == "復讐者の灯火" else None
+        # ★A-60（2026-07-27・L1事故検死 §2パターン1 の帰結・FableA起票）：
+        #   (1) 適用ルールを**封印されしモノ**へ拡張（神社固定＝sim/effects.py:659。クロマクを
+        #       役職に持つ盤系ルールは灯火と封印のみ＝爆弾Xはウィッチのみで対象外のまま）。
+        #   (2) 資金ゲート（"board" in funded）を廃止し**供給到達性ゲート**へ差し替え。
+        #       真因（revenge 10/10 probe検死）＝主人公がクロマクを引き離すと board_guarded(+2)
+        #       ＋belief補正で盤線コストが跳ねて funded から落ち、**復帰そのものが封じられる
+        #       自滅ゲート**だった（復帰すれば能力+1/日は暗躍禁止で止まらない＝「守られ＝高い」
+        #       の前提が崩れる）。到達性＝盤の現在値＋残日数（復帰日から能力+1/日）≥ 閾値2。
+        #       反実仮想で復帰1枚がL1をmm勝ちに反転（revenge 10/10・封印 s3/s4）を確認済み。
+        if ry == "復讐者の灯火":
+            board_x = view.get("rule_y_board_x")
+        elif ry == "封印されしモノ":
+            board_x = "神社"
+        else:
+            board_x = None
         boardx_owner = kuromaku if board_x else None
         if not boardx_owner:
             board_x = None
+        boardx_supply_ok = bool(board_x and not locked
+                                and ba.get(board_x, 0) + days_left >= 2)
 
         # ★B-30③（2026-07-17・FableA承認・大物のテリトリー投射のmm活用）：大物は「テリトリーに
         #   いるものとして能力を使ってもよい」（KB: 20・現物確認済）＝**任意投射**。sim は実エリア∪
@@ -693,13 +1595,22 @@ class HeuristicMastermind:
         out = {"chars": chars, "keyperson": keyperson, "killer": killer,
                "oomono": oomono, "oomono_territory": oomono_territory,
                "boardx_owner": boardx_owner, "board_x": board_x,
+               "boardx_supply_ok": boardx_supply_ok,
                "kuromaku": kuromaku, "kp_anyaku_remover_alive": kp_anyaku_remover_alive,
                "cultist": cultist, "friends": friends,
                "sk": sk, "tt": tt, "killable": killable,
+               "roles": roles,   # ★A-65：不死判定（ROLE_CLAUSE_ABILITY）用の役職表
+               # ★A-67：役職効果パスの材料（lovers/friend）
+               "lover": lover, "mainlover": mainlover, "kill_costs": kill_costs,
+               "friend_target": friend_target, "kill_inc_culprits": kill_inc_culprits,
+               # ★A-74：未来改変プラン族の勝ち筋の的
+               "butterfly_target": butterfly_target, "butterfly_day": butterfly_day,
+               "tt_target": tt_target,
                "death_board_today": death_board_today, "protect": protect,
                "goal_boards": goal_boards, "board_removal": board_removal,
                "board_removal_boards": board_removal_boards,
-               "today_culprit": today_culprit, "culprits_all": culprits_all,
+               "today_culprit": today_culprit, "today_incident": today_incident,
+               "culprits_all": culprits_all,
                "future_culprits": future_culprits, "threats": threats,
                "threat_hearts": threat_hearts,
                "misleader": misleader, "reachable_culprits": reachable_culprits,
@@ -709,8 +1620,12 @@ class HeuristicMastermind:
                "kp_used_tactics": kp_used_tactics,
                "days_left": days_left, "mm_rate": mm_rate,
                "funded": funded, "path_costs": path_costs, "supply": supply,
+               "path_costs_raw": path_costs_raw,   # ★A-73：割増を除いた構造コスト
                "kp_blocked": kp_blocked, "locked": locked,
+               "push_culprit": push_culprit,   # ★A-63：事件日の押し切り対象（無ければNone）
+               "unlocked_coolers": unlocked_coolers,   # ★A-64②：解禁済み冷却役（隔離候補）
                "board_guarded": board_guarded, "killer_guarded": killer_guarded,
+               "kp_guarded": kp_guarded,
                # 役職バレコスト（belief.reveal_cost）用の材料。クロマク居るときだけ格納し、
                # Belief 本体は _score_ability で初めてクロマク手を採点する時に遅延構築する。
                "belief_mat": ({
@@ -874,6 +1789,46 @@ class HeuristicMastermind:
             return True
         return False
 
+    def _plus2_hold(self, o: dict, a: dict, view: dict) -> bool:
+        """★A-61：この+2は温存すべきか（対象在場・被覆実績ゲート＝L1事故検死 §2パターン2）。
+
+        True＝非正当扱い（_plus2_penalty で+1相当以下へ＝温存/散らしの動機）。自明情報のみ：
+        (1) **本命KPが未登場×このループ内に登場予定**の間は、他先への+2を温存する。
+            KP経路が生きている時だけ（僕と契約＝KP暗躍2単独勝ち／殺人計画等＝キラー生存・
+            kp_blocked でない）。検死P3/P4（3日s7/5日s7/5日s19）＝KP=転校生が最終日/D4登場
+            なのにD1-D2に+2を切って打ち消され、本命KPへの一撃手段を喪失（CF＝温存で3局反転）。
+            登場日 entry_days は脚本家に公開（B-50段階C）＝自明情報。未登場＝area None。
+            登場ループ未達（神格）や登場日情報なし（アルバイト？）は予約しない（保守側）。
+        (2) 切り先キャラが**暗躍禁止で覆われる実績が濃い**（killer_guarded／KP被覆2回）＝
+            「防がれうる場所に気軽に切らない」（§1i）。盤は対象外＝A-57（貫通+2）の管轄で、
+            A-54の例外群（確定級転用・囮バックアップ等）も不変。
+        """
+        if not self.p["plus2_presence_gate"]:
+            return False
+        chars = a["chars"]
+        kp = a["keyperson"]
+        tgt, kind = o["target"], o["target_kind"]
+        # (1) 未登場の本命KPのために温存（tgt==kp は登場後にしか選択肢に出ない＝使用局面）
+        if kp and tgt != kp and not a.get("kp_blocked"):
+            kpc = chars.get(kp)
+            _contract = view.get("rule_y") == "僕と契約しようよ！"
+            killer = a.get("killer")
+            path_live = _contract or bool(
+                killer and chars.get(killer, {}).get("alive"))
+            if (kpc and kpc.get("alive") and kpc.get("area") is None and path_live
+                    and view.get("entry_loops", {}).get(kp, 1)
+                    <= view.get("loop", 1)):
+                ed = view.get("entry_days", {}).get(kp)
+                if ed is not None and ed >= view.get("day", 1):
+                    return True
+        # (2) 被覆実績の濃いキャラへは切り札を切らない（+1で拘束するか温存）
+        if kind == "character":
+            if tgt == a.get("killer") and a.get("killer_guarded"):
+                return True
+            if tgt == kp and a.get("kp_guarded"):
+                return True
+        return False
+
     def _plus2_justified(self, o: dict, a: dict, view: dict) -> bool:
         """暗躍+2 を「通れば実利得になる先」に切っているか（docの会計表・自明情報のみ）。"""
         tgt, kind = o["target"], o["target_kind"]
@@ -887,6 +1842,9 @@ class HeuristicMastermind:
             #   フレンド死亡→確定級と判定→+2をTT(入院患者)へ浪費し mm勝ち(L8)を落とした）。
             if self._loop_win_certain(a, view):
                 return True
+            # ★A-61：未登場の本命KPが待っている間は盤への+2も温存（確定級の転用だけは上で例外）。
+            if self._plus2_hold(o, a, view):
+                return False
             # ゴール盤（敗北条件盤）＝**+2が条件充足に寄与する時だけ**正当（docの「充足or確定圏」）。
             #   ★既に≥2（充足済み）への+2は過剰＝実利得ゼロ＝切り札の浪費（btx5_seal s0 の検死＝
             #   神社が既に充足圏なのに+2を足し、囮盤の偽装を捨てていた）。
@@ -901,6 +1859,9 @@ class HeuristicMastermind:
                         return True
             return False
         # --- キャラへの +2 の正当先リスト（KB全数・docの会計表） ---
+        # ★A-61：未登場本命KPの予約中／被覆実績の濃い先＝正当リストより先に温存へ落とす
+        if self._plus2_hold(o, a, view):
+            return False
         # 殺人計画KP（暗躍≥2＋キラー殺害）・キラー自身（≥4への加速）＝_advances_win_char に集約
         if self._advances_win_char({"target": tgt}, a):
             return True
@@ -918,11 +1879,17 @@ class HeuristicMastermind:
         return False
 
     def _plus2_penalty(self, o: dict, a: dict, view: dict) -> float:
-        """非正当先への暗躍+2 を +1相当以下へ落とす減点（切り札の浪費抑止）。"""
+        """非正当先への暗躍+2 を +1相当以下へ落とす減点（切り札の浪費抑止）。
+
+        ★A-61：温存ゲート（_plus2_hold）該当は filler帯まで落とす強い減点＝plus2_hold_waste。
+        それ以外の非正当先は従来の plus2_waste（A-54・landed バランス不変）。
+        """
         if not self.p["plus2_discipline"] or o.get("card") != "暗躍+2":
             return 0.0
         if self._plus2_justified(o, a, view):
             return 0.0
+        if self._plus2_hold(o, a, view):
+            return self.p["plus2_hold_waste"]
         return self.p["plus2_waste"]
 
     # -- 行動カードのセット --------------------------------------------------
@@ -987,6 +1954,13 @@ class HeuristicMastermind:
         #     ★塞がれ検知後はピン留め価値だけ残して優先度を下げ、(2b)のキラー自己暗躍へ切替。
         if kind == "character" and val and tgt == a["keyperson"]:
             if chars[tgt]["anyaku"] >= 2:
+                # ★A-62：A-48上限会計のカード側接続（B3残欠）。上限（除去者生存3/不在2）
+                #   以上への積み増しは打点ゼロ＝filler最下位へ（従来は一律 set_kp_done=30 で
+                #   ノイズ帯より上＝s14型の過剰積みの源）。上限未満（除去者生存×暗躍2）は
+                #   除去1回を耐えるバッファ＝従来の done 値を維持。
+                if (self.p["anyaku_cap_gate"]
+                        and chars[tgt]["anyaku"] >= self._kp_anyaku_cap(a)):
+                    return self.p["set_kp_over"]
                 return self.p["set_kp_done"]
             if a["kp_blocked"]:
                 return self.p["set_kp_blocked"]
@@ -1004,6 +1978,33 @@ class HeuristicMastermind:
                 if not _escort:
                     score = max(1.0, score - self.p["tactic_repeat"])
             return score
+        # (2c) ★A-67：役職効果の勝ち筋への暗躍。
+        #   ①メインラバーズ本人へ暗躍1（50:160の発動条件の片方）。
+        #   ②殺害系事件の的づくり＝ラバーズ/フレンドを暗躍2へ（遠隔殺人＝40:152）。
+        #   ②は「相方の死→不安6が無償」（50:153,159）や「フレンド死→ループ終了時敗北」
+        #   （40:130）に直結＝不安レースを迂回する筋（§1d）。
+        if kind == "character" and val and self.p["role_effect_paths"] \
+                and not a["locked"] and chars.get(tgt, {}).get("alive"):
+            if tgt and tgt == a.get("mainlover"):
+                if chars[tgt]["anyaku"] >= 1:
+                    return self.p["set_lovers_done"]      # 条件充足済み＝積み増しは打点ゼロ
+                return (self.p["set_lovers_funded"] + val * self.p["set_val_mult"]
+                        if "lovers" in a["funded"] else self.p["set_lovers_unfunded"])
+            # 的づくりは「その対象を殺す筋に資金が出ている」時だけ（過剰積みを作らない）
+            # ★的づくりは「その対象に殺害経路が実在する」時だけ（A-67 flipped検死）：
+            #   遠隔殺人が無い脚本ではラバーズを暗躍2にしても殺せず、1/loopの暗躍+2を
+            #   捨てるだけ（実測 3日 random_BTX#2 が 6→3 に退行・正着は本体への暗躍+1）。
+            _is_lover_tgt = (tgt and tgt == a.get("lover") and "lovers" in a["funded"]
+                             and a.get("mainlover") and chars[tgt]["anyaku"] < 2
+                             and tgt in a.get("kill_costs", {}))
+            _is_friend_tgt = (tgt and tgt == a.get("friend_target")
+                              and "friend" in a["funded"] and chars[tgt]["anyaku"] < 2)
+            if _is_lover_tgt or _is_friend_tgt:
+                return (self.p["set_friendkill_funded"]
+                        + val * self.p["set_val_mult"])
+            if ((tgt and tgt == a.get("lover")) or tgt in a["friends"]) \
+                    and chars[tgt]["anyaku"] >= 2:
+                return self.p["set_friendkill_done"]      # 的は完成＝これ以上は打点ゼロ
         # (2b) キラー自身に暗躍4（主人公殺害）。
         #     ★二正面圧力：残手数会計が「kp/boardと同時に賄える」と言うなら、塞がれる前から
         #     副軸として積む（主人公の暗躍禁止は1枚/T＝両方は塞げない）。
@@ -1028,6 +2029,19 @@ class HeuristicMastermind:
                     and (tgt == a["today_culprit"] or tgt in a["future_culprits"])
                     and th is not None and c["unrest"] >= max(1, th - 1)):
                 return self.p["set_cool_locked"]  # 臨界間際の犯人を冷やして事件を不発に
+        # ★A-66（2026-07-27）：理想filler＝不安0の対象への不安-1。
+        #   不安-1は脚本家の1/loop札ではない（10:36・ONCE_PER_LOOP外＝毎日戻る）＋
+        #   カウンターは0未満にならず、重なる不安+1は先に解決される（10:23・resolver:379）＝
+        #   **どの応手・同時札でも盤面効果ゼロが保証**される唯一の埋め札。
+        #   従来0.0で籤引き負けし、飽和霧（不安+1のsat=2＝自陣資産に見えるカウンターを積む）や
+        #   自陣供給役の徘徊（stray=3＝観測可能な再配置）が選ばれていた（A-66観測＝局1/局5/局6）。
+        #   ★B-68の学び（無意味な置きはbelief観測の供給）への論証：本札の解決は不可視
+        #   （カウンター変化なし・移動なし）＝相手が得る観測はσの置き先のみ。置き先は
+        #   「不安0の全キャラ」で同点＝タイブレークで一様＝置き先分布から役職・犯人は読めない。
+        if card == "不安-1" and kind == "character":
+            c = chars.get(tgt)
+            if c and c["alive"] and c["unrest"] == 0:
+                return self.p["set_cool_zero_filler"]
         if card == "不安+1" and kind == "character":
             if a["locked"]:
                 return self.p["set_unrest_locked"]  # 勝ち確定時は不安を増やさない
@@ -1046,6 +2060,26 @@ class HeuristicMastermind:
                            inc["name"], view["roles"].get(tgt, ""))
                        for inc in view["incidents"]):
                     return self.p["set_unrest_zero_th"]
+                # ★A-67：役職効果パス（lovers/friend）の殺害手段になる事件の犯人＝
+                #   発火させること自体が勝ち筋の一部＝同じパスの暗躍と競れる優先度で積む。
+                if (self.p["role_effect_paths"]
+                        and tgt in a.get("kill_inc_culprits", ())
+                        and ("lovers" in a["funded"] or "friend" in a["funded"])
+                        and th is not None and c["unrest"] < th):
+                    return self.p["set_unrest_killpath"]
+                # ★A-63：事件日の押し切り（詳細は _analyze の push_culprit）＝臨界到達後も
+                #   当日はカードを併置して主人公の重ね札を吸収する（過剰置き抑制より優先。
+                #   置かなければ相手の札1枚が自由な冷却-1になる＝カード自体が拘束の実手）。
+                if tgt == a["push_culprit"]:
+                    return self.p["set_unrest_push"]
+                # ★A-74：発生そのものが敗北条件になる事件（未来改変プラン×蝶の羽ばたき・
+                #   KB: 50:45-47）の犯人＝**その不安がパスそのもの**＝資金化している間は
+                #   汎用の today(60)/future(40) でなくパス帯（killpath と同格）で積む。
+                #   ★A-63 の押し切り（上）より後＝landed 挙動を保存する。
+                if (self.p["set_unrest_butterfly"] and tgt == a.get("butterfly_target")
+                        and "butterfly" in a["funded"]
+                        and th is not None and c["unrest"] < th):
+                    return self.p["set_unrest_butterfly"]
                 # ★発生の打点会計：臨界に届かない事件の犯人へは不安+1を注がない（無駄撃ち）。
                 #   届く犯人（reachable）だけ本命価値、届かないなら霧まきに劣後させる。
                 if tgt == a["today_culprit"] and th is not None and c["unrest"] < th:
@@ -1114,13 +2148,16 @@ class HeuristicMastermind:
                 return noise
         # (4-bx) ★A-24'（2026-07-16・FableA承認）：board_x の担い手（クロマク/ウィッチ）を board_x へ
         #        戻す／board_x から引き剥がさない。担い手の能力＝暗躍禁止で止まらない唯一の供給線。
-        #        (b)打点会計ガード＝ゴール未達（not locked）かつボード筋に資金がある（"board" in funded）
-        #          時だけ。届かないなら戻しても filler＝置かない。
+        #        (b)★A-60でゲート差し替え＝旧「"board" in funded」は、引き離され後に guarded+
+        #          belief 補正で盤線が unfunded になり**復帰そのものを封じる自滅ゲート**だった
+        #          （L1事故検死 §2パターン1・revenge 10/10）。新ゲート＝供給到達性
+        #          （盤の現在値＋残日数≥閾値2＝復帰後の能力+1/日は暗躍禁止で止まらない）。
+        #          届かないなら戻しても filler＝置かない、の意図は保持。
         #        (c)固執しない＝スコアは移動帯（killer50/kuromaku48）と同格に留め、より良い手
         #          （ゴール盤への暗躍 set_board_base=100 等）があればそちらが勝つ。主人公が毎ターン
         #          移動札を貼ってくるなら、それは1:1のカード交換＝こちらの損ではない。
         if (card in MOVE_CARDS and kind == "character" and a["board_x"]
-                and tgt == a["boardx_owner"] and not a["locked"] and "board" in a["funded"]):
+                and tgt == a["boardx_owner"] and a["boardx_supply_ok"]):
             mv = chars.get(tgt)
             if mv and mv["alive"] and mv["area"] and mv["area"] != a["board_x"]:
                 if a["board_x"] in forbidden_of(tgt):
@@ -1136,8 +2173,8 @@ class HeuristicMastermind:
                 if tgt == mover:
                     # ★A-24'「留める」：資金の付いた board_x に居る担い手は、KP寄せで引き剥がさない
                     #   （board_x への供給線を自分から切る自滅手＝KP経路より board_x が近い）。
-                    if (tgt == a["boardx_owner"] and a["board_x"] and not a["locked"]
-                            and "board" in a["funded"]
+                    if (tgt == a["boardx_owner"] and a["board_x"]
+                            and a["boardx_supply_ok"]   # ★A-60：復帰側とゲートを統一
                             and chars.get(tgt, {}).get("area") == a["board_x"]):
                         return self.p["set_move_stray"]
                     # ★B-30③：mover が大物で、KP が大物のテリトリーに居るなら、大物をKPへ寄せる移動は
@@ -1175,6 +2212,36 @@ class HeuristicMastermind:
                     and kpc["area"] not in forbidden_of(tgt)
                     and _single_move_card(tc3["area"], kpc["area"]) == card):
                 return self.p["set_move_witness"]
+        # (4a-2) ★A-41'（再訪版・2026-07-26 棚の再発掘）：クロマク供給の能動カバー移動。
+        #        クロマク能力供給（脚本家能力フェイズ＝暗躍禁止で止まらない主筋）は発動のたび
+        #        present（その場の顔ぶれ）を公開する。主人公は B-59（供給源退避・present×
+        #        argmax≥0.15）/(c3)(0.7)/(c3b)(0.3) の**決定的ゲート**で供給源を退避させてくる
+        #        （B-59 land済み・btx18実測＝mm敗着）。present が「クロマク＋自陣役職（他のtellで
+        #        いずれ割れる）だけ」に痩せている供給日は、非自陣の第三者を1枚で供給ボードへ
+        #        寄せ、候補集合を肥やして特定を遅らせる＝(4a-1)目撃者のクロマク供給版。
+        #        ★A-41初版（負の結果・棚上げ）との差分＝当時は主人公が reveal 情報を防御に
+        #        使わずレバーが無かった→B-59で反転（棚の再発掘 A-1）。会計は「相手の決定的
+        #        ゲートの発火条件を公開事実で外す」に照準＝**相手が自作AI（決定的・公開情報
+        #        駆動）だから可能な会計**であり、人間相手には汎化しない可能性がある（検死doc）。
+        if card in MOVE_CARDS and kind == "character" and self.p["set_move_cover"] \
+                and a["kuromaku"] and not a["locked"]:
+            kc4 = chars.get(a["kuromaku"])
+            if kc4 and kc4["alive"] and kc4.get("area") in a["goal_boards"]:
+                cover_area = kc4["area"]
+                # 自陣役職は他のtell（カルティスト無視/殺害/犯人性）で割れる＝カバー価値なし
+                own_side = {a["kuromaku"], a["cultist"], a["killer"]} \
+                    | set(a.get("culprits_all", ()))
+                thin = not any(
+                    o["alive"] and o.get("area") == cover_area
+                    and o["name"] not in own_side
+                    for o in view["characters"])
+                tc4 = chars.get(tgt)
+                if (thin and tgt not in own_side and tgt != a["keyperson"]
+                        and tc4 and tc4["alive"] and tc4.get("area")
+                        and tc4["area"] != cover_area
+                        and cover_area not in forbidden_of(tgt)
+                        and _single_move_card(tc4["area"], cover_area) == card):
+                    return self.p["set_move_cover"]
         # (4a0) ★移動封鎖（ユーザー知見 2026-07-06）：今ターン死亡ボード（病院の事件が発生）へ、
         #       生かしたい自陣キャラ（未来の犯人・キラー・SK等）を主人公に入れさせない。
         #       対象が死亡ボードの隣接に居るなら、直交移動を置けば主人公が何を足しても入れない
@@ -1190,7 +2257,9 @@ class HeuristicMastermind:
                     return self.p["set_move_block_death"]  # 直交移動で死亡ボードへ入れない＝生存確保
         # (4a1) ★シリアルキラーの位置作り（ユーザー知見 2026-07-06：SKをもっと使う）：
         #       SK＋標的（キーパーソン/フレンド）を2人きりにすればターン終了に【強制】で殺せる。
-        #       (i)SK自身を「標的だけが居るエリア」へ寄せる／(ii)SK＋標的の部屋の3人目を追い出す。
+        #       (i)SK自身を「標的だけが居るエリア」へ寄せる／(ii)SK＋標的の部屋の3人目を追い出す／
+        #       (iii)★A-64①：標的を「SKが1人で居るエリア」へ配達する（目視検死『蝶レース再審』§5＝
+        #       この欠けモードが0.0点タイの籤引きになっていた。btx5_future CF 9/9反転の主形）。
         if card in MOVE_CARDS and kind == "character" and a["sk"] and a["killable"] \
                 and not a["locked"]:
             _sk = a["sk"]
@@ -1211,6 +2280,14 @@ class HeuristicMastermind:
                                 and _single_move_card(_skc["area"], _tc["area"]) == card
                                 and not _alive_in(_tc["area"], exclude=(_t,))):
                             return self.p["set_move_sk_approach"]
+                # (iii) ★A-64①：標的をSKの単独エリアへ配達＝移動1枚で2人きり
+                elif tgt in a["killable"] and self.p["a64_gate"]:
+                    _tc = chars.get(tgt)
+                    if (_tc and _tc["alive"] and _tc["area"]
+                            and _move_dest(_tc["area"], card) == _skc["area"]
+                            and _skc["area"] not in forbidden_of(tgt)
+                            and not _alive_in(_skc["area"], exclude=(_sk,))):
+                        return self.p["set_move_sk_deliver"]
                 # (ii) SK＋標的が居る3人部屋の"3人目"を別エリアへ追い出す＝残りが2人きり
                 elif tgt != _sk and tgt not in a["killable"]:
                     _tc = chars.get(tgt)
@@ -1221,6 +2298,59 @@ class HeuristicMastermind:
                         if (len(_here) == 3 and len(_tg_here) == 1 and _dest
                                 and _dest != _skc["area"] and _dest not in forbidden_of(tgt)):
                             return self.p["set_move_sk_evict"]
+        # (4a1b) ★A-64③：発生見込みの殺人事件当日に、犯人と急所（KP/フレンド）を同席させる
+        #        （目視検死『蝶レース再審』§7＝実対局は無人の部屋で空撃ちだった）。
+        #        形(a)＝急所を犯人のエリアへ配達／形(b)＝犯人を急所のエリアへ寄せる
+        #        （(b)は犯人が既に臨界の時だけ＝当日のML同居押し込みを崩さない）。
+        #        急所が既に同席しているなら不要（既存の被害者選択 inc_kp/inc_friend が拾う）。
+        if card in MOVE_CARDS and kind == "character" and self.p["a64_gate"] \
+                and not a["locked"] and a["fires_today"] and a["killable"] \
+                and any(inc["day"] == view["day"] and inc["name"] == "殺人事件"
+                        and inc["culprit"] == a["today_culprit"]
+                        for inc in view["incidents"]):
+            _cu = chars.get(a["today_culprit"])
+            if _cu and _cu["alive"] and _cu["area"]:
+                _kill_alive = [t for t in a["killable"]
+                               if chars.get(t, {}).get("alive") and chars.get(t, {}).get("area")]
+                if not any(chars[t]["area"] == _cu["area"] for t in _kill_alive):
+                    # (a) 急所を犯人のエリアへ
+                    if (tgt in _kill_alive and tgt != a["today_culprit"]
+                            and _move_dest(chars[tgt]["area"], card) == _cu["area"]
+                            and _cu["area"] not in forbidden_of(tgt)):
+                        return self.p["set_move_murder_meet"]
+                    # (b) 犯人を急所のエリアへ（臨界済み＝押し込み不要の時だけ）
+                    _cth = unrest_threshold_of(a["today_culprit"])
+                    if (tgt == a["today_culprit"] and _cth is not None
+                            and _cu["unrest"] >= _cth):
+                        _dest = _move_dest(_cu["area"], card)
+                        if (_dest and _dest not in forbidden_of(tgt)
+                                and any(chars[t]["area"] == _dest for t in _kill_alive)):
+                            return self.p["set_move_murder_meet"]
+        # (4a1c) ★A-64②：解禁済み冷却役の隔離＝冷却能力の「同エリア前提」を移動1枚で解体
+        #        （目視検死『蝶レース再審』§6）。レースが生きている犯人（今日〜明日の事件で
+        #        届く/臨界済み）のエリアに居る冷却役を引き剥がす。自陣資産（犯人・ML・
+        #        カルティスト・SK・protect）は動かさない。
+        if card in MOVE_CARDS and kind == "character" and self.p["a64_gate"] \
+                and not a["locked"] and tgt in a["unlocked_coolers"] \
+                and tgt != a["misleader"] and tgt != a["cultist"] and tgt != a["sk"] \
+                and tgt not in a["protect"]:
+            _tc = chars.get(tgt)
+            if _tc and _tc["alive"] and _tc["area"]:
+                for inc in view["incidents"]:
+                    if not (view["day"] <= inc["day"] <= view["day"] + 1):
+                        continue
+                    if tgt == inc["culprit"]:
+                        continue          # 犯人自身は動かさない（MLとの同居を崩す）
+                    _cu = chars.get(inc["culprit"])
+                    _cth = unrest_threshold_of(inc["culprit"])
+                    if not (_cu and _cu["alive"] and _cu["area"] == _tc["area"]
+                            and _cth is not None and _cth >= 1):
+                        continue
+                    if (inc["culprit"] in a["reachable_culprits"]
+                            or _cu["unrest"] >= _cth):
+                        _dest = _move_dest(_tc["area"], card)
+                        if _dest and _dest not in forbidden_of(tgt):
+                            return self.p["set_move_cool_exile"]
         # (4a2) ★ミスリーダーを（届く）犯人のエリアへ寄せる移動：同居させれば脚本家能力
         #       フェイズの不安+1で犯人の不安を日数×2で稼げる（ユーザー知見 2026-07-06）。
         #       届かない事件には寄せない（無駄移動）。抑制モード時も不要。
@@ -1330,6 +2460,11 @@ class HeuristicMastermind:
                     if c["alive"] and c["area"] == reveal_area)
         return self.p["ab_sparse_penalty"] * max(0.0, self.p["ab_reveal_crowd"] - crowd)
 
+    def _kp_anyaku_cap(self, a: dict) -> int:
+        """A-48上限会計：KP暗躍の正当上限（除去者生存3＝除去1回を耐えるバッファ／不在2）。
+        ★A-62でカード側・能力側・事件側からも参照する共通ヘルパー化（値は A-48 と同一）。"""
+        return 3 if a.get("kp_anyaku_remover_alive") else 2
+
     def _advances_win_char(self, o: dict, a: dict) -> bool:
         """A-48：クロマクのキャラ暗躍（o=character target）が**生きた勝ち筋を前進させるか**。
         前進＝KP暗躍が未達（<2・除去者生存なら<3のバッファ）／キラー暗躍<4（killer4本命 or 切替後）。
@@ -1338,11 +2473,18 @@ class HeuristicMastermind:
         chars = a["chars"]
         kp, killer = a["keyperson"], a["killer"]
         if tgt == kp and "kp" in a["funded"] and not a["kp_blocked"]:
-            cap = 3 if a.get("kp_anyaku_remover_alive") else 2
-            return chars.get(kp, {}).get("anyaku", 0) < cap
+            return chars.get(kp, {}).get("anyaku", 0) < self._kp_anyaku_cap(a)
         if (tgt == killer and killer and chars.get(killer, {}).get("alive")
                 and ("killer4" in a["funded"] or a["kp_blocked"])):
             return chars.get(killer, {}).get("anyaku", 0) < 4
+        # ★A-67：役職効果パスの前進（メインラバーズの暗躍1／的づくりの暗躍2）
+        if self.p["role_effect_paths"] and chars.get(tgt, {}).get("alive"):
+            if tgt and tgt == a.get("mainlover") and "lovers" in a["funded"]:
+                return chars[tgt].get("anyaku", 0) < 1
+            if tgt and tgt == a.get("lover") and "lovers" in a["funded"]:
+                return chars[tgt].get("anyaku", 0) < 2
+            if tgt and tgt == a.get("friend_target") and "friend" in a["funded"]:
+                return chars[tgt].get("anyaku", 0) < 2
         return False   # 非勝ち筋キャラ・過剰・塞がれ後のKP等＝前進ゼロ
 
     def _score_ability(self, o: dict, a: dict) -> float:
@@ -1384,6 +2526,21 @@ class HeuristicMastermind:
                       if ("ability" in a.get("kp_used_tactics", ())
                           and o.get("target") == a["keyperson"]) else 0.0)
             if o["target_kind"] == "character":
+                # ★A-62：**上限超過**（KP暗躍≥cap／キラー暗躍≥4）だけはリーク弁を通さない＝
+                #   A-48は情報コスト会計（コストゼロ＝抑制理由なし）だが、上限超過は打点ゼロの
+                #   **資源会計**＝クロマク露呈後（reveal_cost==0）でも積む理由が無い。
+                #   s14実測＝D1にカード+2+能力+1で3到達（=cap・除去者転校生生存）後、露呈済み
+                #   クロマクの能力+1がD3/D5にKPへ流れて5まで過剰積み（リーク弁で素通り）。
+                #   非勝ち筋キャラ等の「前進ゼロ」は従来どおりリーク弁つきA-48（下）のまま。
+                if self.p["anyaku_cap_gate"]:
+                    _kpn, _kin = a["keyperson"], a["killer"]
+                    if (o["target"] == _kpn and _kpn
+                            and a["chars"].get(_kpn, {}).get("anyaku", 0)
+                            >= self._kp_anyaku_cap(a)):
+                        return self.p["ab_rumor_offgoal"] - reveal_cost
+                    if (o["target"] == _kin and _kin
+                            and a["chars"].get(_kin, {}).get("anyaku", 0) >= 4):
+                        return self.p["ab_rumor_offgoal"] - reveal_cost
                 # ★A-48：勝ち筋を前進させないキャラ暗躍（KP過剰・非勝ち筋キャラ・塞がれ後）は filler化＝
                 #   少人数エリアでのソース確定リークを避ける（発動を我慢＝reveal_cost系の情報衛生）。
                 #   cap は除去者生存でKP暗躍3まで（バッファ1）。gate=0 で旧挙動へ戻せる。
@@ -1433,6 +2590,14 @@ class HeuristicMastermind:
             c = a["chars"].get(tgt)
             th = unrest_threshold_of(tgt)
             below = c and th is not None and c["unrest"] < th
+            # ★A-63：事件日の押し切り＝臨界到達後も冷却容量に抗して臨界以上を維持する
+            #   （belowゲート不問。カード側と別時点の臨界判定で連動不発になるのを塞ぐ）。
+            if tgt == a["push_culprit"]:
+                return self.p["ab_unrest_push"]
+            # ★A-74：発生＝敗北の事件の犯人（資金化中）はパス帯で積む（カード側と同じ規律）。
+            if (self.p["ab_unrest_butterfly"] and tgt == a.get("butterfly_target")
+                    and "butterfly" in a["funded"] and below):
+                return self.p["ab_unrest_butterfly"]
             # ★打点会計：臨界に届かない事件の犯人へは注がない（無駄＝位置情報だけ漏らす）。
             if tgt == a["today_culprit"] and below:
                 return (self.p["ab_unrest_today"] if tgt in a["reachable_culprits"]
@@ -1517,9 +2682,24 @@ class HeuristicMastermind:
         if tgt in AREAS:
             return (self.p["inc_board_goal"] if tgt in a["goal_boards"]
                     else self.p["inc_board_other"])
+        # ★A-65：殺害系（殺人事件/遠隔殺人）の被害者に不死（条文能力＝00:175「死亡しない」・
+        #   役職はタイムトラベラー＝50:125）を選ばない。指定は「可」だが効果ゼロ
+        #   （40:158/50:192/60:A26）＝空振り＋「殺せる同席者が居たのに誰も死ななかった」の
+        #   推理材料を渡す。他に候補が居る時だけ避ける（採点順位＝doc string 参照）。
+        if (a.get("today_incident") in ("殺人事件", "遠隔殺人")
+                and ROLE_CLAUSE_ABILITY.get(a["roles"].get(tgt, "")) == "不死"):
+            return self.p["inc_immortal"]
         # キーパーソン殺害（勝ち）＞フレンド殺害（ループ終了時敗北）＞脅威キャラ排除。
         # ★未来の犯人は脅威でも殺さない（自分の事件を消してしまう）＝回避を脅威より先に判定。
         if tgt == a["keyperson"]:
+            # ★A-62：A-48上限会計の事件側接続。カウンター付与系の事件（不安拡大＝暗躍+1／
+            #   蝶の羽ばたき＝+1）でKP暗躍が既に上限以上なら、KPを選んでも打点ゼロ＝他へ回す。
+            #   殺害系（殺人事件/遠隔殺人）のKP選択は勝ち手そのもの＝上限と無関係に不変。
+            if (self.p["anyaku_cap_gate"]
+                    and a.get("today_incident") in ("不安拡大", "蝶の羽ばたき")
+                    and a["chars"].get(tgt, {}).get("anyaku", 0)
+                    >= self._kp_anyaku_cap(a)):
+                return self.p["inc_other"]
             return self.p["inc_kp"]
         if tgt in a["friends"]:
             return self.p["inc_friend"]
