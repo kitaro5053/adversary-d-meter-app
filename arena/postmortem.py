@@ -50,8 +50,15 @@ def fast_copy(state):
 
 
 def replay_with_snapshots(script, seed: int, loops: int = 8,
-                          mm_params: dict | None = None):
-    """ベンチ（loops_to_win）と同一条件で再現し、日開始スナップショットを添える。"""
+                          mm_params: dict | None = None,
+                          rng_states: dict | None = None):
+    """ベンチ（loops_to_win）と同一条件で再現し、日開始スナップショットを添える。
+
+    ★B-223：rng_states に dict を渡すと、各日開始時点の**脚本家 rng 状態**
+    （(loop, day) → mm.rng.getstate()）も書き込む。反実仮想リプレイの原局面 bit 再現
+    （counterfactual.continue_loop の mm_rng_state）に使う＝B-220 実測で
+    「新品エージェント継続は同点帯で原局面と割れる」（`_pick` が option 1つにつき
+    rng を1回消費＝rng 位置がずれる）ことが確定したため。省略時は従来と同一。"""
     probe = replace(script, loops=loops)
     mm = HeuristicMastermind(seed, params=mm_params)
     hp = HeuristicProtagonist(seed)
@@ -59,6 +66,8 @@ def replay_with_snapshots(script, seed: int, loops: int = 8,
 
     def on_day(state):
         snaps[(state.loop_no, state.day)] = fast_copy(state)
+        if rng_states is not None:
+            rng_states[(state.loop_no, state.day)] = mm.rng.getstate()
 
     state, log = run_game(probe, {"mastermind": mm, "p1": hp, "p2": hp, "p3": hp},
                           on_day_start=on_day)

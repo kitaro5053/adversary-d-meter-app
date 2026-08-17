@@ -50,8 +50,16 @@ Phase 1 がそれを落としていた原因は2つとも**実装**である：
 
 from __future__ import annotations
 
-from .b100_mix import (SUPPLY_MAX, futile_reason, noop_ctx_for, past_loss_keys,
-                       repeat_count, rumor_prob, supply_candidate_count)
+from .b100_mix import (B211_FRIEND_DEATH_ATTR_DEFAULT, SUPPLY_MAX, futile_reason,
+                       iron_band_hit, kinshi_self_negate_reason, noop_ctx_for,
+                       past_loss_keys, repeat_break_keys, repeat_count,
+                       rumor_prob, supply_candidate_count)
+from .b221_breaker import b221_break_blocked
+from .b224_channel import b224_yield_blocked
+
+#: ★B-225 v2 除外2＝先払いが押しのけてはいけない予定手の札種（友好投資＝ループ内
+#  累積の常設線）。教材＝`random_BTX#6` d5（`友好+2→ナース` を退避で押しのけ全敗）。
+_B225_KEEP_INTENT_CARDS = frozenset({"友好+1", "友好+2"})
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +99,7 @@ _SK_P = 0.5
 
 
 def self_harm_reason(view: dict, roles: dict, card: str, target: str,
-                     target_kind: str) -> str | None:
+                     target_kind: str, *, sk_p: float = _SK_P) -> str | None:
     """その折り手を打つと**別の致命局面（2人きり）を自作する**なら理由を返す。
 
     ★実測（B-100 Phase 3 の検死・`random_BTX` s4 L3D2＝3日級/5日級とも同じ機序）：
@@ -109,6 +117,10 @@ def self_harm_reason(view: dict, roles: dict, card: str, target: str,
       ★VIP を要求するのが要点＝SK と**ただの通行人**が2人きりになっても
         ループ敗北にはならない（`defense_plan._sk_pair_threats` が脅威を立てる条件と揃える）。
         VIP を要求しない粗い版は 3日級の介入 20→2 と潰しすぎた（§Step3 の実測）。
+
+    ★B-206（2026-08-12）：`sk_p`（既定＝`_SK_P`＝0.5）は**呼び手が SK 容疑の下限を
+      上げ下げできる**ようにしたもの（既定値は従来と同一＝B-100 側は bit 不変）。
+      通常採点からもこの述語を単一ソースとして呼ぶ（`heuristic_protagonist._b206_self_harm`）。
     """
     if target_kind != "character" or not card.startswith("移動") \
             or card == "移動禁止":
@@ -129,7 +141,7 @@ def self_harm_reason(view: dict, roles: dict, card: str, target: str,
     for i, c in enumerate(rest):
         p_sk = float((roles.get(c.get("name")) or {}).get(_SK_ROLE, 0.0))
         other = rest[1 - i].get("name")
-        if p_sk >= _SK_P and other in vips:
+        if p_sk >= sk_p and other in vips:
             return (f"{area}にVIP {other} と {c.get('name')}(SK疑い{p_sk:.2f})の"
                     f"2人きりを作る")
     return None
@@ -161,12 +173,28 @@ def live_constraints(agent, view: dict, options: list[dict], threats, *,
     （B-100 Phase 3 の発火面積の計測＝`arena/b100_funnel.py`）。既定では 1回の
     `is not None` 判定が増えるだけ＝**挙動 bit 不変**。
     """
+    # ★B-185 Phase 2（既定 OFF＝bit 不変）：このターンに先席が **robust=True** の折り手で
+    #   支払済みのラベル。下の `placed` キー照合は「折り手は席の options からしか生成されない
+    #   ×重ね置き不可（sim/legal.py:64-66）」により構造的に交差ゼロ＝死んだ検査（監査 B185
+    #   §1-2）なので、ターン内で安定なラベルで照合し直す。robust=False（退避等＝mm が
+    #   同ターンに追える）の先払いは**外さない**（2席目の保険を殺さない＝罠(i)）。
+    paid = ((getattr(agent, "_b100_paid", None) or {})
+            if getattr(agent, "B185_PAID_LABELS", False) else {})
     by_key: dict = {}
     for o in options:
         by_key.setdefault(_key(o), o)
-    past = past_loss_keys(view.get("history", []) or [], view.get("loop"))
+    # ★B-211：フレンド死亡線の帰属を使うか（agent 属性が単一の置き場・既定はモジュール既定）。
+    past = past_loss_keys(
+        view.get("history", []) or [], view.get("loop"),
+        friend_attr=getattr(agent, "B211_FRIEND_DEATH_ATTR",
+                            B211_FRIEND_DEATH_ATTR_DEFAULT))
     cast = [c.get("name") for c in view.get("characters", []) or []]
     inc_names = {i.get("name") for i in view.get("incidents", []) or []}
+    # ★B-225：切替の読み出しは1回（既定 OFF＝False＝rep_keys/raw_keys を計算しない）。
+    _b225 = getattr(agent, "B225_REPEAT_AWARE_BREAK", False)
+    _b225_rep_min = max(1, getattr(agent, "B225_REP_MIN", 1))
+    # ★B-227「資格の帯」（既定 OFF＝False＝b227_keys を計算しない＝bit 不変）。
+    _b227 = getattr(agent, "B227_IRON_BAND", False)
 
     out: list[dict] = []
     for t in threats:
@@ -189,6 +217,10 @@ def live_constraints(agent, view: dict, options: list[dict], threats, *,
                for c in t.conditions for b in c.breaks]
         if any(k in placed for k in raw):
             continue                       # 自チームが既に折った＝被覆済み
+        if paid.get(t.label):              # ★B-185：先席が robust=True で支払済み
+            if stats is not None:
+                stats["b185_paid"] = stats.get("b185_paid", 0) + 1
+            continue
         if stats is not None:              # 段B＝そのうち未被覆
             stats["B"] = stats.get("B", 0) + 1
         keys, here = set(), []
@@ -197,6 +229,13 @@ def live_constraints(agent, view: dict, options: list[dict], threats, *,
                 if futile_reason(view, agent, roles, b.card, b.target,
                                  b.target_kind, ctx, rumor_p):
                     continue               # 公開情報から確実にゼロ効果＝折り手に数えない
+                # ★B-205：このターン2枚目の暗躍禁止は**折り手ではない**（rules/10:61＝
+                #   自滅で先席の暗躍禁止まで消える純損失）。空振り扱いと同じ位置で外す＝
+                #   `keys`（後続席が担う判定）にも入れない＝2枚目は誰が置いても被覆にならない。
+                if kinshi_self_negate_reason(agent, b.card):
+                    if stats is not None:
+                        stats["b205_kinshi"] = stats.get("b205_kinshi", 0) + 1
+                    continue
                 k = (b.card, b.target, b.target_kind)
                 keys.add(k)
                 o = by_key.get(k)
@@ -216,6 +255,26 @@ def live_constraints(agent, view: dict, options: list[dict], threats, *,
                             here = None
                             break
                         continue
+                    # ★B-221（既定 OFF＝False）：同署名の敗北で負け続けた決定打日の
+                    #   自手はこの席から強制しない（`here` だけ絞る。`keys` は残す＝
+                    #   誰かが打ったときの被覆判定は従来どおり）。Phase 0 の実測＝
+                    #   ピン（移動禁止→犯人候補）を score 側で下げても、ここが同じ
+                    #   ピンを最安 break として強制し直す逆流があるため両方を塞ぐ。
+                    if b221_break_blocked(agent, b.card, b.target,
+                                          b.target_kind):
+                        if stats is not None:
+                            stats["b221_blocked"] = stats.get("b221_blocked",
+                                                              0) + 1
+                        continue
+                    # ★B-224 切替口② yield（既定 OFF＝False）：冷却札を持たない
+                    #   席は当日犯人候補を占有する折り手を強制しない（`keys` は残す）。
+                    #   score 側の yield cap と同じ述語＝「下げたピンを B-100 が
+                    #   強制し直す」逆流を塞ぐ（B-221 と同じ配線位置）。
+                    if b224_yield_blocked(agent, b.card, b.target,
+                                          b.target_kind):
+                        if stats is not None:
+                            stats["b224_yield"] = stats.get("b224_yield", 0) + 1
+                        continue
                     here.append((b.cost, b, o))
             if here is None:
                 break
@@ -232,20 +291,60 @@ def live_constraints(agent, view: dict, options: list[dict], threats, *,
         #   `culprits` 未指定なら計算しない（None＝100%級に数えない＝従来どおり）。
         n_sup = (supply_candidate_count(t, roles, culprits or {}, view)
                  if culprits is not None else None)
+        rep = repeat_count(t, past, cast, inc_names)
+        # ★B-225（既定 OFF＝空集合のまま・計算もしない）：反復敗北の帰属キーのうち
+        #   折り手の対象になり得る名前（板/キャラ）。here の選好と先払いが見る。
+        #   `keys`（被覆判定）には一切影響しない。`raw_keys`＝futile 除外**前**の
+        #   全折り手キー＝先払いの除外1（intent がこのチャネルの防御そのもの）用。
+        rkeys = frozenset()
+        if _b225 and rep >= _b225_rep_min:
+            rkeys = repeat_break_keys(t.kind, t.label, past, cast, inc_names)
+        # ★B-227（既定 OFF＝空集合のまま・計算もしない）：帯資格の判定用の帰属キー。
+        #   B-225 と rep 条件が違いうる（帯は rep≥1 から）ため別フィールドに持つ。
+        #   `gate_reason(iron_band=True)` だけが見る＝被覆判定・選好には影響しない。
+        bkeys = frozenset()
+        if _b227 and rep >= 1:
+            bkeys = (rkeys if (_b225 and rep >= _b225_rep_min)
+                     else repeat_break_keys(t.kind, t.label, past, cast,
+                                            inc_names))
         out.append({"threat": t, "keys": keys, "here": here,
                     "prob": float(t.prob),
                     "n_supply": n_sup,
                     "top": (n_sup is not None and n_sup <= supply_max),
-                    "repeat": repeat_count(t, past, cast, inc_names)})
+                    "repeat": rep, "rep_keys": rkeys, "b227_keys": bkeys,
+                    "raw_keys": (frozenset(raw) if _b225 else frozenset())})
     return out
 
 
 # ---------------------------------------------------------------------------
 # 発火の資格（θ経路／鉄則①）＝`allocate` と計測（Phase 3）の**単一ソース**
 # ---------------------------------------------------------------------------
+#: ★B-176 精錬（2026-08-07 FableA 追加発注 (a)）＝当夜×帯の資格は
+#  「**今夜、敗北（または不可逆の喪失）として発火しうる**」型に限る＝
+#  「**今夜完成しうる仕込み**」型は除外する。分類は label 照合ではなく
+#  **Threat.kind（builder の構造分類）**で行う：
+#  - `sk_setup`＝2人きりが**まだ盤面に実在せず**、mm の伏せ札パターンだけから推定する
+#    多手仕込み（`defense_plan._threat_sk_setup`）。掃引の実測で 103 点級の自然手を
+#    毎日押し出すトレッドミル源だった（`random_FS#10` 5日級 2→9）。
+#  - `mainlover_chain`＝ラバーズ死亡という**中間イベントを経由**する連鎖の予防
+#    （prob ≤ 0.4 で帯には届かないが、分類として明示する）。
+#  対して kp_sk/virus_sk（2人きりが盤面に実在＝`_sk_pair_threats` は同エリアの
+#  SK容疑を要求）・kp_killer・mainlover_protagonist・killer_protagonist・factor_kp・
+#  incident 系（事件日当日）・board_defeat/kp_anyaku/tt_defeat（最終日）は
+#  「今夜、敗北条件が盤面上で完成しうる」型＝資格対象のまま。
+#  ★θ経路（①）はこの除外の対象外＝仕込み型でも θ以上なら従来どおり資格。
+B176_SETUP_KINDS = frozenset({"sk_setup", "mainlover_chain"})
+
+
 def gate_reason(c: dict, *, theta: float, iron_prob: float | None,
                 force_gate: str, supply_gate: bool = False,
-                supply_max: int = SUPPLY_MAX) -> str | None:
+                supply_max: int = SUPPLY_MAX,
+                tonight_prob: float | None = None,
+                today: int | None = None,
+                imminent_ok: bool = False,
+                iron_rep_min: int = 1,
+                iron_band: bool = False,
+                iron_guard=None) -> str | None:
     """この制約が「席を使ってでも折る」資格を持つか。持たなければ None。
 
     ★B-112（Phase 4）＝**資格は2軸**にできる：
@@ -255,20 +354,56 @@ def gate_reason(c: dict, *, theta: float, iron_prob: float | None,
          「実在度は 0.5 でも、供給しうる役職の候補が2人以下なら筋が見えている」
          という実戦的な線引き（`supply_gate=True` で有効）。
       ③ 鉄則①＝同型の敗北の反復（正典 §6）。
+      ④ ★B-176（2026-08-07）＝**当夜×確度帯**：その脅威が**今夜発火しうる**
+         （`Threat.due_day == today`）かつ実在度が `tonight_prob` 以上。
+         機序＝0.5〜0.9 帯の当夜 fatal は①〜③のどの経路でも資格を得られず、
+         通常採点では将来事件の候補冷却（45〜80級）に構造的に負ける
+         （監査 B176 Phase1 §2）。`tonight_prob=None`（既定）＝OFF＝挙動 bit 不変。
+         `imminent_ok`＝感度層（board_defeat・対象板の暗躍≥1＝今夜1枚で不可逆化）も
+         当夜とみなす別軸（既定 OFF）。
     """
     t = c["threat"]
     if force_gate == "all":
         return "制約（fatal×defendable）"
     if t.prob >= theta - 1e-9:
         return f"θ経路（実在度{t.prob:.2f}≥{theta}）"
+    if (tonight_prob is not None and t.prob >= tonight_prob - 1e-9
+            and t.kind not in B176_SETUP_KINDS):
+        due = getattr(t, "due_day", None)
+        if today is not None and due is not None and due == today:
+            return f"当夜×帯（発火予定日{due}＝今日・実在度{t.prob:.2f}≥{tonight_prob}）"
+        if imminent_ok and getattr(t, "imminent", False):
+            return f"当夜×帯（板が臨界間際＝今夜1枚で不可逆化・実在度{t.prob:.2f}≥{tonight_prob}）"
     if supply_gate and c.get("top"):
         return (f"供給候補≤{supply_max}（{c.get('n_supply')}人"
                 f"・実在度{t.prob:.2f}）")
-    if iron_prob is not None and t.prob >= iron_prob - 1e-9 and c["repeat"] >= 1:
+    # ★B-224 切替口①：鉄則①の rep 条件（`iron_rep_min`・既定 1＝従来と同一）。
+    #   低い確率閾値（0.15 等）には深い反復実績（rep_min 2〜4）を要求できる＝
+    #   「反復敗北の実績があるとき確率閾値を下げる」（B-211 §5-4）の操作化。
+    if (iron_prob is not None and t.prob >= iron_prob - 1e-9
+            and c["repeat"] >= max(1, iron_rep_min)):
+        # ★B-227「資格の帯」（`iron_band`・既定 False＝従来と bit 同一）：
+        #   低確率帯の鉄則資格をチャネル帰属の質で絞る（Phase 0 の判別則＝
+        #   `b100_mix.iron_band_hit` が単一ソース。`b227_keys` は
+        #   `live_constraints` が同じ照合＝`repeat_break_keys` で付与済み）。
+        if iron_band:
+            if not iron_band_hit(c.get("b227_keys") or (),
+                                 (b for _cost, b, _o in (c.get("here") or ())),
+                                 iron_guard):
+                return None
+            return (f"鉄則①帯（同型の敗北{c['repeat']}回・実在度{t.prob:.2f}"
+                    f"・帰属キーへ設置札）")
         return f"鉄則①（同型の敗北{c['repeat']}回・実在度{t.prob:.2f}）"
     return None
 
 
+# ---------------------------------------------------------------------------
+# ★B-161（2026-08-04）：**計測専用フック**（既定 None＝何もしない＝挙動 bit 不変）。
+#   `allocate` が「どの段で降りたか」と「その時点の制約一覧（資格・here の先頭）」を
+#   1回だけ流す。B-160 §8 が示した「(c)=0 かつ (e)=0」の**原因の段**を、
+#   `allocate` を書き写さずに（＝二重実装せずに）特定するために使う。
+#   ★呼び出し側（`arena/b161_audit.py`）が `b100_alloc.TRACE = fn` を代入して使う。
+TRACE = None
 # ---------------------------------------------------------------------------
 # 割り当て本体
 # ---------------------------------------------------------------------------
@@ -298,6 +433,11 @@ def allocate(agent, view: dict, options: list[dict], threats, *,
     #   `supply_candidate_count` を呼ばない＝**挙動 bit 不変**（呼び出しコストも増えない）。
     supply_gate = bool(getattr(agent, "B100_SUPPLY_GATE", False))
     supply_max = getattr(agent, "B100_SUPPLY_MAX", None) or SUPPLY_MAX
+    # ★B-176：当夜×確度帯の資格軸（B-112 供給候補ゲートと同じ配線パターン＝
+    #   `getattr` で受ける・既定 None＝OFF＝挙動 bit 不変）。
+    tonight_prob = getattr(agent, "B176_TONIGHT_PROB", None)
+    imminent_ok = bool(getattr(agent, "B176_BOARD_IMMINENT", False))
+    today = view.get("day")
     # ★DP-6：B-112 の写しの是正（repaired_threats）は退役＝本体（defense_plan）が直った。
     cons = live_constraints(agent, view, options, threats, roles=roles, ctx=ctx,
                             rumor_p=rumor_p, placed=placed,
@@ -305,12 +445,41 @@ def allocate(agent, view: dict, options: list[dict], threats, *,
                             culprits=(culprits if supply_gate else None),
                             supply_max=supply_max)
     if not cons:
+        if TRACE is not None:
+            TRACE({"stage": "cons無し", "ret": None, "cons": []})
         return None
 
     def _gate(c):
         return gate_reason(c, theta=theta, iron_prob=iron_prob,
                            force_gate=force_gate, supply_gate=supply_gate,
-                           supply_max=supply_max)
+                           supply_max=supply_max,
+                           tonight_prob=tonight_prob, today=today,
+                           imminent_ok=imminent_ok,
+                           iron_rep_min=getattr(agent, "B224_IRON_REP_MIN", 1),
+                           iron_band=getattr(agent, "B227_IRON_BAND", False),
+                           iron_guard=getattr(agent, "B227_GUARD_CARDS", None))
+
+    def _emit(stage: str, ret=None, intent=None) -> None:
+        """★B-161 計測専用（`TRACE is None`＝即 return＝挙動 bit 不変）。"""
+        if TRACE is None:
+            return
+        TRACE({"stage": stage, "ret": ret,
+               "intent": (None if intent is None else
+                          (intent["card"], intent["target"])),
+               "loop": view.get("loop"), "day": view.get("day"),
+               "cons": [{"label": c["threat"].label, "kind": c["threat"].kind,
+                         "prob": float(c["threat"].prob), "gate": _gate(c),
+                         "n_here": len(c["here"]), "repeat": c["repeat"],
+                         "here0": (c["here"][0][1].card if c["here"] else None),
+                         "here0_label": (c["here"][0][1].label if c["here"] else None),
+                         # ★B-225 計測用＝この席から実際に打てる折り手の全列挙
+                         #   （cost 順）。TRACE is None の既定では実行されない。
+                         "here": [(cost, b.card, b.target, b.target_kind)
+                                  for cost, b, _o in c["here"]],
+                         "breaks": [(b.card, b.cost, b.label)
+                                    for cd in c["threat"].conditions
+                                    for b in cd.breaks]}
+                        for c in cons]})
 
     # ---- Phase 3：計画が無いターンは「どの席を取るか」と「どの需要を落とすか」が別物 ----
     # 検死（`random_BTX` s4 L3D2・3日級／5日級とも同一）：
@@ -322,12 +491,20 @@ def allocate(agent, view: dict, options: list[dict], threats, *,
     # ★是正＝払う気になったターンだけ、AI本体の3席一括計画（`_plan_turn`）を立てて
     #   後続席の意図を確定させる。計画は「逐次貪欲の再現」を基準に持つので、
     #   計画ゲート未達なら旧挙動と同じ3手組が返る（＝落ちる需要が B-100 の選択と一致する）。
+    #   ★↑この前提は B-186 Phase 0 で否定された（鏡の写しは実物とズレる＝|歪み|≥10 が
+    #     5日級47%・設置の92%超が棄却計画の上書き＝介入0退行の主因）。
     # 既定 OFF（`B100_MAKE_PLAN` 属性が無ければ False）＝挙動 bit 不変。
     if (getattr(agent, "B100_MAKE_PLAN", False) and n_prot_placed == 0
             and not getattr(agent, "_turn_plan", None) and score is not None
             and any(c["here"] and _gate(c) for c in cons)):
         try:
-            _p = agent._plan_turn(view, options, score)
+            # ★B-186 Phase 1a（`B186_CLEAN_REJECT`・既定 OFF）：採用ゲートを通った計画
+            #   **だけ**を設置する（棄却時は `_plan_turn` が [] を返す＝設置なし＝各席は
+            #   従来どおり独立採点）。OFF なら従来と同一の呼び出し＝挙動 bit 不変。
+            if getattr(agent, "B186_CLEAN_REJECT", False):
+                _p = agent._plan_turn(view, options, score, clean_reject=True)
+            else:
+                _p = agent._plan_turn(view, options, score)
         except Exception:
             _p = None
         if _p:
@@ -347,6 +524,18 @@ def allocate(agent, view: dict, options: list[dict], threats, *,
         _matched = [c for c in cons if ikey in c["keys"]]
         if _matched and (not getattr(agent, "B100_MATCH_GATED", False)
                          or any(_gate(c) for c in _matched)):
+            # ★B-115：段G（一致席）＝この席の予定手が既にどれかの制約を折っている
+            #   ＝**B-100 が通常採点と同じ結論に独立到達した席**（`arena/b100_funnel.py`
+            #   の段Gと同一の述語＝ここが単一ソース。UI側では再計算しない）。
+            #   note を agent に残すだけ＝返り値・分岐・順序は不変（挙動 bit 不変）。
+            #   実際に prov タグを立てるのは decide() 側（その手が本当に打たれた時だけ）。
+            agent._b100_match_note = {
+                "key": ikey,
+                "labels": [c["threat"].label for c in _matched],
+                "kinds": [c["threat"].kind for c in _matched],
+            }
+            _emit("設計3短絡（この席の予定手が既にどれかの制約を折っている）",
+                  ret={"matched": [c["threat"].label for c in _matched]}, intent=intent)
             return None
 
     # ---- 後続席の予定手（`_turn_plan` があるときだけ既知）で未被覆を絞る ----
@@ -363,11 +552,13 @@ def allocate(agent, view: dict, options: list[dict], threats, *,
     open_ = [c for c in cons
              if not any(k in c["keys"] for k in later_keys)]   # 後続席が折らない制約
     if not open_:
+        _emit("後続席が全部折る（open_ が空）", intent=intent)
         return None
 
     # ---- 発火の資格（設計2の literal＝"all" ／ 従来どおり θ・鉄則で絞る＝"theta"） ----
     elig = [(c, w) for c in open_ if (w := _gate(c)) is not None]
     if not elig:
+        _emit("資格ゼロ（θ経路も鉄則も通らない）", intent=intent)
         return None
 
     # ---- 席の上限（§10-1「確度100%級が2本→3席」はそのまま引き継ぐ） ----
@@ -376,6 +567,7 @@ def allocate(agent, view: dict, options: list[dict], threats, *,
                                                 view)) is not None and n <= SUPPLY_MAX)
     cap = max_seats_2x100 if n_top >= 2 else max_seats
     if seats_used >= cap:
+        _emit("席の上限（seats_used >= cap）", intent=intent)
         return None
 
     # ---- 設計4：最終席から奪わない（後続席で回復できる余地を残す） ----
@@ -386,8 +578,59 @@ def allocate(agent, view: dict, options: list[dict], threats, *,
     #   カスケードを構造的にゼロにする最小の述語になる。
     if getattr(agent, "B100_NOPLAN_LAST", False) and not plan:
         if n_seats_left > 1:
+            # ★B-225 先払い（既定 OFF）：先送りすると**この席の予定手が対象を占有して
+            #   帰属キーに触れる折り手が後続席から構造的に消える**（重ね置き不可＝
+            #   sim/legal.py）場合に限る例外＝資格つき×rep≥REP_MIN の制約の
+            #   「帰属キーに触れる折り手（rep_keys 一致）」をこの席で払う。
+            #   Phase 0 の実測（BTX#12 iron015 L4-L8 D1）＝intent `不安-1→男子学生` が
+            #   `暗躍禁止→男子学生` を消し、最終席にはポンプに算術負けする冷却だけが
+            #   残っていた。資格・被覆判定は変えない（発火済み elig の中でだけ動く）。
+            if (getattr(agent, "B225_REPEAT_AWARE_BREAK", False)
+                    and intent is not None
+                    # ★除外2（v2・BTX#6 教材）＝友好投資の予定手は押しのけない。
+                    #   友好はループ内累積の常設線（TT 任意敗北の封じ手＝友好3以上・
+                    #   `rules/50:128`／友好能力の解禁）＝「占有」はむしろ防御の継続。
+                    #   実測＝L2D3 の `友好+2→ナース` を退避で押しのけ 2[def]→9[fb_loss]。
+                    and intent.get("card") not in _B225_KEEP_INTENT_CARDS):
+                _it = intent.get("target")
+                _ik = _key(intent)
+                for c, why in elig:
+                    if not c.get("rep_keys"):
+                        continue           # rep 条件込みで live_constraints が付与済み
+                    # ★除外1（v2・BTX#18 教材）＝予定手がこの制約の**生 break**
+                    #   （futile 除外前の折り手キー）そのものなら押しのけない＝
+                    #   その手は同じチャネルの防御そのもの（例＝板ガード 暗躍禁止→神社が
+                    #   当該ターンの void/収支判定で keys から外れていても、常設防御としては
+                    #   正しい）。実測＝L6D1 の押しのけで 6[def]→9[fb_loss]。
+                    if _ik in c.get("raw_keys", ()):
+                        continue
+                    # ★除外1b（v3・BTX#18 の残存教材）＝予定手が**帰属キーそのものへの
+                    #   ガード札（暗躍禁止/移動禁止）**なら押しのけない。builder が
+                    #   「止まらない供給」等の理由で kinshi break を条件に生成しない場合は
+                    #   生 break 照合（除外1）をすり抜けるが、盤面上は同チャネルの予防
+                    #   そのもの＝同チャネル内の置き換えは先払いの領分ではない。
+                    #   ★不安-1 は入れない（BTX#12 の回収例＝`不安-1→男子学生` は
+                    #   暗躍チャネルに寄与しない手＝押しのけが正解だった）。
+                    if (intent.get("card") in ("暗躍禁止", "移動禁止")
+                            and _it in c["rep_keys"]):
+                        continue
+                    hits = [h for h in c["here"]
+                            if h[1].target in c["rep_keys"] and h[1].target == _it]
+                    if not hits:
+                        continue
+                    _cost, brk, opt = hits[0]      # here は cost 順＝先頭が最安
+                    _emit("強制した", ret={"label": c["threat"].label,
+                                          "card": brk.card, "target": brk.target,
+                                          "tk": brk.target_kind,
+                                          "break": brk.label,
+                                          "b225": "先払い"}, intent=intent)
+                    return (opt, c["threat"],
+                            f"{why}／B-225先払い（先送りで消える折り手）＝{brk.label}",
+                            intent)
+            _emit("計画なしターンは最終席のみ（B100_NOPLAN_LAST）", intent=intent)
             return None
     elif spare_last and n_seats_left <= 1:
+        _emit("最終席から奪わない（spare_last）", intent=intent)
         return None
 
     # ---- 設計5：席が足りないときの落とし方＝①反復筋 ②実在度 ③安さ ----
@@ -397,9 +640,35 @@ def allocate(agent, view: dict, options: list[dict], threats, *,
                              x[0]["threat"].label))
     # 支払える席の総数（この席＋後続の空き席）。cap を超えては使わない。
     n_pay = min(cap - seats_used, 1 + n_free_later)
+    # ★B-176 精錬 (b)（2026-08-07・既定 None＝OFF＝bit 不変）：**帯資格の席だけ**の
+    #   押し出しガード＝この席の予定手（intent）の点数が上限を超えるなら、当夜×帯の
+    #   資格では席を奪わない（θ・供給候補・鉄則の資格は従来どおり対象外）。
+    #   機序＝`random_FS#10` の退行は帯資格が 103.0 点の自然手を 1点級の保持手で
+    #   押し出し続ける形だった（監査 B176 Phase2 §4）。
+    _b176_disp = getattr(agent, "B176_MAX_DISPLACED", None)
+    _int_s = None
+    if _b176_disp is not None and intent is not None and score is not None:
+        try:
+            _int_s = float(score(intent))
+        except Exception:
+            _int_s = None
     for c, why in elig[:max(1, n_pay)]:
         if not c["here"]:
             continue                       # この席からは打てない＝後続の空き席に委ねる
-        _cost, brk, opt = c["here"][0]
+        if (_b176_disp is not None and _int_s is not None
+                and why.startswith("当夜×帯") and _int_s > _b176_disp):
+            continue                       # 帯資格はこの高価な席を奪わない（(b) ガード）
+        # ★B-225 選好（既定 OFF＝rep_keys が空）：帰属キーに触れる折り手を cost 順より
+        #   優先する（触れる折り手同士は cost 順＝here の並びのまま先頭を取る）。
+        picked = c["here"][0]
+        if c.get("rep_keys"):
+            _th = [h for h in c["here"] if h[1].target in c["rep_keys"]]
+            if _th:
+                picked = _th[0]
+        _cost, brk, opt = picked
+        _emit("強制した", ret={"label": c["threat"].label, "card": brk.card,
+                              "target": brk.target, "tk": brk.target_kind,
+                              "break": brk.label}, intent=intent)
         return opt, c["threat"], f"{why}／折り手＝{brk.label}", intent
+    _emit("優先順位で上位に負けた／この席から打てない（here が空）", intent=intent)
     return None

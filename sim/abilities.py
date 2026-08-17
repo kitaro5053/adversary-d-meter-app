@@ -497,16 +497,24 @@ def _alubaito_q_apply(state, user, target):
 
 
 # ability名は data.GOODWILL_ABILITIES と一致。target_kind は表示用。
+# ★B-140：`board_scope` ＝その能力が**板（ボード）の暗躍**を剥がせる範囲の宣言。
+#   ("神社",) 等の固定タプル／"self_board"＝能力者のいるボード（＝どの板にもなりうる）。
+#   キーが無い能力は**板を対象に取れない**（例＝転校生は同一エリアの他キャラ限定）。
+#   宣言は targets 実装と同じ行に置く＝単一ソース。targets の実挙動との一致は
+#   tests/test_b140_board_removal_scope.py が機械的に検証する（宣言の独り歩きを防ぐ）。
 ABILITY_IMPL: dict[tuple[str, str], dict] = {
     ("男子学生", "学生の不安除去"): {"targets": _student_unrest_targets, "apply": _student_unrest_apply},
     ("女子学生", "学生の不安除去"): {"targets": _student_unrest_targets, "apply": _student_unrest_apply},
-    ("巫女", "神社の暗躍除去"): {"targets": _miko_shrine_targets, "apply": _miko_shrine_apply},
+    ("巫女", "神社の暗躍除去"): {"targets": _miko_shrine_targets, "apply": _miko_shrine_apply,
+                                 "board_scope": ("神社",)},   # KB rules/20:129 神社限定
     ("巫女", "同エリアの役職開示"): {"targets": _reveal_same_area_targets, "apply": _reveal_target_role_apply},
     ("サラリーマン", "自身の役職開示"): {"targets": _self_targets, "apply": _reveal_self_apply},
     ("イレギュラー", "自身の役職開示（第2L以降）"): {"targets": _irregular_targets, "apply": _reveal_self_apply},
     ("刑事", "このループ発生事件の犯人開示"): {"targets": _detective_targets, "apply": _detective_apply},
     ("神格", "事件の犯人開示"): {"targets": _shinkaku_culprit_targets, "apply": _detective_apply},
-    ("神格", "暗躍除去（キャラ/ボード）"): {"targets": _shinkaku_anyaku_targets, "apply": _remove_anyaku_apply},
+    ("神格", "暗躍除去（キャラ/ボード）"): {"targets": _shinkaku_anyaku_targets,
+                                            "apply": _remove_anyaku_apply,
+                                            "board_scope": "self_board"},  # KB rules/20:153 自ボード
     ("医者", "不安操作（除去/付与）"): {"targets": _same_area_others,
                                        "apply": _doctor_unrest_apply, "needs_decide": True},
     ("アイドル", "不安除去"): {"targets": _same_area_others, "apply": _unrest_remove_apply},
@@ -547,6 +555,30 @@ ABILITY_IMPL: dict[tuple[str, str], dict] = {
 
 def is_implemented(character: str, ability: str) -> bool:
     return (character, ability) in ABILITY_IMPL
+
+
+def board_anyaku_removal_scope(character: str, ability: str,
+                               boards=None) -> frozenset:
+    """★B-140：(キャラ, 能力) が**板（ボード）の暗躍**を剥がせる板の集合。
+
+    剥がせないなら空集合。KB（rules/20_goodwill_abilities.md）の現物：
+      - 巫女「神社の暗躍除去」:129  ＝「巫女が**神社**にいないと使えない」＝神社のみ
+      - 神格「暗躍除去（キャラ/ボード）」:153 ＝「同一エリアにいるキャラ1人か、**神格のいる
+        ボード**」＝立っている板（どの板にもなりうる）
+      - 転校生「暗躍除去＋友好付与」:123 ＝「同一エリアにいる**他のキャラ1人**」
+        ＝**板は対象に取れない**（実カード表記も「暗躍カウンター1つを友好カウンターに置き換える」）
+    ∴ 板の暗躍を剥がせるのは巫女（神社のみ）と神格（自ボード）の2人だけ。
+
+    boards＝"self_board" を解決する候補板（省略＝全4エリア）。呼び出し側が
+    「ゴール板のうちどれが剥がされうるか」を知りたい時は goal_boards を渡す。
+    """
+    impl = ABILITY_IMPL.get((character, ability))
+    scope = impl.get("board_scope") if impl else None
+    if scope is None:
+        return frozenset()
+    if scope == "self_board":
+        return frozenset(_AREAS if boards is None else boards)
+    return frozenset(scope)
 
 
 def ability_targets(state: GameState, character: str, ability: str) -> list[str]:

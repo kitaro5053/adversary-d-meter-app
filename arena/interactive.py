@@ -128,6 +128,12 @@ def play_interactive(script: Script, ai_agents: dict, human_seats: set[str],
         })
         return chosen
 
+    # ★B-214：AI が脚本家席のときも、その AI が複線演出（板へのダミー配置）を使うなら
+    #   `sim/flow` 側の候補生成に allow_bluff を開く（既定 False＝従来と1手も変わらない）。
+    #   人間=脚本家席では上の分岐が options を作り直すので、この値は無関係。
+    decide.mm_allow_bluff = bool(
+        getattr(ai_agents.get("mastermind"), "wants_bluff_options", False))
+
     # human_seats を run_loop へ渡す＝人間=脚本家プレイでカルティストの暗躍禁止無視を
     #   任意発動（都度選択）にする（AI対局は human_seats に mastermind 無し＝従来どおり常に無視）。
     run_loop(state, decide, on_day_start=on_day_start, final_battle=final_battle,

@@ -46,11 +46,32 @@ import copy
 from collections import Counter
 
 from . import flow
+from .legal import MASTERMIND_BOARD_CARDS
 from .loop_solver import _Frontier, _plan_decider
 from .state import GameState
 
 MASTERMIND = "mastermind"
 PROTAGONIST = "protagonist"
+
+
+def _needs_bluff(state: GameState, placements) -> bool:
+    """★B-223：脚本家セットに**板ダミー**（非暗躍札の板配置・幻想板の実効札を除く）があるか。
+
+    B-214/B-215 既定 ON（2026-08-14 再基準化）以降、実対局のσには板ダミーが混ざる。
+    従来の量化（allow_bluff=False）はこの中身と整合できず、
+    (a) 板σが残り暗躍札より多い日＝**量化不能**（ValueError・B-220 実測＝FS#10 L5D4／BTX#3 L8D2
+        ＝いずれも板σ2枚 vs 残暗躍札は暗躍+1 のみ〔暗躍+2 は 1/loop 使用済み〕）、
+    (b) 整合する別中身が在る日＝**実際の中身が ∀c の量化範囲に入らない**まま判定が返る
+        （＝現実が範囲外の判定）。∴ 実セットに板ダミーがある日は量化に allow_bluff を開く。
+    """
+    if not placements:
+        return False
+    gensou = {c.area for n, c in state.characters.items()
+              if n == "幻想" and c.alive and c.on_board}
+    return any(p.get("target_kind") == "board"
+               and p.get("card") not in MASTERMIND_BOARD_CARDS
+               and p.get("target") not in gensou
+               for p in placements)
 
 
 # ---------------------------------------------------------------------------
@@ -67,9 +88,15 @@ def _slim(state: GameState) -> GameState:
     return copy.deepcopy(st)
 
 
-def _run_plan(state: GameState, plan: list[dict]) -> GameState:
+def _run_plan(state: GameState, plan: list[dict],
+              mm_bluff: bool = False) -> GameState:
+    """★B-223：mm_bluff＝脚本家 set_card 候補に allow_bluff を開く（`run_day` は decide
+    関数の属性 `mm_allow_bluff` を見る＝`sim/flow.attach_mm_bluff` と同じ配線口）。
+    既定 False＝従来と1手も変わらない。"""
     st = copy.deepcopy(state)
-    flow.run_day(st, _plan_decider(plan))
+    decider = _plan_decider(plan)
+    decider.mm_allow_bluff = mm_bluff
+    flow.run_day(st, decider)
     return st
 
 
@@ -89,15 +116,16 @@ def _finish(st: GameState, objective) -> str:
     return MASTERMIND if st.defeat else PROTAGONIST
 
 
-def _day_outcome(state: GameState, plan: list[dict], objective: str) -> str:
+def _day_outcome(state: GameState, plan: list[dict], objective: str,
+                 mm_bluff: bool = False) -> str:
     """6枚（脚本家3＋主人公3）を与えた後の開フェーズを完全ミニマックスで解く。"""
     try:
-        done = _run_plan(state, plan)
+        done = _run_plan(state, plan, mm_bluff)
     except _Frontier as f:
         controller = MASTERMIND if f.actor == "mastermind" else PROTAGONIST
         last = None
         for o in f.options:
-            r = _day_outcome(state, plan + [o], objective)
+            r = _day_outcome(state, plan + [o], objective, mm_bluff)
             if r == controller:
                 return r            # 手番側が望む値＝即確定（2値なので単純）
             last = r
@@ -113,12 +141,14 @@ def _dedup_key(placements: list[dict]) -> tuple:
     return tuple(sorted(tuple(sorted(o.items())) for o in placements))
 
 
-def enum_mm_sets_for_sigma(state: GameState, sigma: list[tuple[str, str]]
-                           ) -> list[list[dict]]:
+def enum_mm_sets_for_sigma(state: GameState, sigma: list[tuple[str, str]],
+                           allow_bluff: bool = False) -> list[list[dict]]:
     """σ（(target, kind) の多重集合）に整合する脚本家セット（中身つき）を全列挙。
 
     主人公の観測＝置き位置のみ。中身の候補は残り手札とカードの置ける先
-    （ボードは暗躍+のみ・幻想ボード例外）で絞られる＝これが ∀c の量化範囲。"""
+    （ボードは暗躍+のみ・幻想ボード例外）で絞られる＝これが ∀c の量化範囲。
+    ★B-223：allow_bluff=True＝板ダミー（非暗躍札の板置き＝KB `rules/10:70-71`）も
+    ∀c の量化範囲に入れる（B-214 時代のσとの整合に必要）。既定 False＝従来と bit 同一。"""
     want = Counter(sigma)
     results: list[list[dict]] = []
     seen: set = set()
@@ -131,7 +161,7 @@ def enum_mm_sets_for_sigma(state: GameState, sigma: list[tuple[str, str]]
 
     def rec(chosen: list[dict], remaining: Counter) -> None:
         try:
-            _run_plan(state, chosen)
+            _run_plan(state, chosen, allow_bluff)
         except _Frontier as f:
             if f.actor != "mastermind" or f.decision != "set_card":
                 if not remaining:   # 脚本家セットを抜けた＝σを使い切っていれば有効
@@ -150,12 +180,17 @@ def enum_mm_sets_for_sigma(state: GameState, sigma: list[tuple[str, str]]
 
 
 def enum_prot_sets(state: GameState, mm_prefix: list[dict],
-                   cap: int = 200_000) -> list[list[dict]] | None:
+                   cap: int = 200_000,
+                   allow_bluff: bool | None = None) -> list[list[dict]] | None:
     """主人公応手（3席分）の完全列挙。cap 超過は None（→ unknown で棄権）。
 
     応手の合法性は脚本家の中身に依らない（重ね禁止は「対象」だけを見る）ため、
     代表の mm_prefix 1つで列挙してよい。順序重複は日単位の解決結果に影響しない
-    （所有席の違いは 1/L 消費＝翌日以降にのみ効く）ので多重集合で束ねる。"""
+    （所有席の違いは 1/L 消費＝翌日以降にのみ効く）ので多重集合で束ねる。
+    ★B-223：allow_bluff＝None（既定）は mm_prefix から自動判定（板ダミーを含む
+    prefix は開いた候補列でしか置けない＝計画消費の整合のため）。"""
+    if allow_bluff is None:
+        allow_bluff = _needs_bluff(state, mm_prefix)
     results: list[list[dict]] = []
     seen: set = set()
 
@@ -169,7 +204,7 @@ def enum_prot_sets(state: GameState, mm_prefix: list[dict],
         if len(results) > cap:
             return False
         try:
-            _run_plan(state, mm_prefix + chosen)
+            _run_plan(state, mm_prefix + chosen, allow_bluff)
         except _Frontier as f:
             if f.actor == "mastermind" or f.decision != "set_card":
                 add(chosen)         # 主人公セットを抜けた（縮退：置ける手が無い席等）
@@ -223,7 +258,8 @@ def _order_responses(state: GameState, responses: list[list[dict]]
 # ---------------------------------------------------------------------------
 
 def classify_day(state: GameState, sigma=None, mm_set=None,
-                 objective: str = "survive", cap: int = 200_000) -> dict:
+                 objective: str = "survive", cap: int = 200_000,
+                 allow_bluff: bool | None = None) -> dict:
     """日開始局面 state（run_day 直前）とσで、今日の完全判定を行う。
 
     sigma: [(target, kind), ...]（3件）。mm_set（実対局の中身つき placements）を
@@ -231,16 +267,25 @@ def classify_day(state: GameState, sigma=None, mm_set=None,
       {"verdict": "defense_exists"|"mate"|"guessing"|"unknown",
        "defense": R or None, "mate_content": c or None,
        "n_contents": int, "n_responses": int}
+
+    ★B-223 allow_bluff＝∀c の量化範囲に板ダミー中身を入れるか。
+      None（既定）＝mm_set から自動判定：実セットが板ダミーを含む日だけ開く
+      （＝従来判定できていた日は bit 同一のまま、B-214 時代の量化不能を解消）。
+      ★既知の限界（正直に明記）＝実セットが板ダミーを**含まない**日は従来どおり閉じる
+      ＝「脚本家はダミーも置き得た」という認識的な量化範囲より狭い（従来からの仕様）。
+      完全な範囲で問うときは allow_bluff=True を明示する。
     """
     if sigma is None:
         if not mm_set:
             raise ValueError("sigma か mm_set のどちらかが必要")
         sigma = [(p["target"], p["target_kind"]) for p in mm_set]
     base = _slim(state)
-    contents = enum_mm_sets_for_sigma(base, list(sigma))
+    if allow_bluff is None:
+        allow_bluff = _needs_bluff(base, mm_set)
+    contents = enum_mm_sets_for_sigma(base, list(sigma), allow_bluff)
     if not contents:
         raise ValueError(f"σに整合する脚本家セットが無い（snapshotとσの不整合）: {sigma}")
-    responses = enum_prot_sets(base, contents[0], cap=cap)
+    responses = enum_prot_sets(base, contents[0], cap=cap, allow_bluff=allow_bluff)
     if responses is None:
         return {"verdict": "unknown", "reason": f"応手が{cap}通り超",
                 "defense": None, "mate_content": None,
@@ -252,7 +297,7 @@ def classify_day(state: GameState, sigma=None, mm_set=None,
     def outcome(M: list[dict], R: list[dict]) -> str:
         key = (_dedup_key(M), _dedup_key(R))
         if key not in ocache:
-            ocache[key] = _day_outcome(base, M + R, objective)
+            ocache[key] = _day_outcome(base, M + R, objective, allow_bluff)
         return ocache[key]
 
     # 防御の存在証明（∃R ∀c）：見つかれば確定。全滅なら「防御なし」も確定（完全列挙）。
@@ -279,21 +324,25 @@ def classify_day(state: GameState, sigma=None, mm_set=None,
 
 def find_defenses(state: GameState, sigma=None, mm_set=None,
                   objective: str = "survive", cap: int = 200_000,
-                  max_found: int | None = None) -> list[list[dict]] | None:
+                  max_found: int | None = None,
+                  allow_bluff: bool | None = None) -> list[list[dict]] | None:
     """防御応手（∀中身で凌ぐR）を列挙する — 学習の教師信号用（引き継ぎ§5）。
 
     classify_day の defense 探索の find-all 版。「AIの選択が防御集合に入っているか」
     で採点する用途（複数解があるため単一の防御例との一致で罰しない）。
-    max_found で打ち切り可。応手列挙が cap 超過なら None（棄権）。"""
+    max_found で打ち切り可。応手列挙が cap 超過なら None（棄権）。
+    allow_bluff＝classify_day と同じ（★B-223・None＝mm_set から自動判定）。"""
     if sigma is None:
         if not mm_set:
             raise ValueError("sigma か mm_set のどちらかが必要")
         sigma = [(p["target"], p["target_kind"]) for p in mm_set]
     base = _slim(state)
-    contents = enum_mm_sets_for_sigma(base, list(sigma))
+    if allow_bluff is None:
+        allow_bluff = _needs_bluff(base, mm_set)
+    contents = enum_mm_sets_for_sigma(base, list(sigma), allow_bluff)
     if not contents:
         raise ValueError(f"σに整合する脚本家セットが無い: {sigma}")
-    responses = enum_prot_sets(base, contents[0], cap=cap)
+    responses = enum_prot_sets(base, contents[0], cap=cap, allow_bluff=allow_bluff)
     if responses is None:
         return None
     ocache: dict = {}
@@ -301,7 +350,7 @@ def find_defenses(state: GameState, sigma=None, mm_set=None,
     def outcome(M, R):
         key = (_dedup_key(M), _dedup_key(R))
         if key not in ocache:
-            ocache[key] = _day_outcome(base, M + R, objective)
+            ocache[key] = _day_outcome(base, M + R, objective, allow_bluff)
         return ocache[key]
 
     found: list[list[dict]] = []
@@ -315,23 +364,27 @@ def find_defenses(state: GameState, sigma=None, mm_set=None,
 
 def defense_exists(state: GameState, sigma=None, mm_set=None,
                    objective: str = "survive", cap: int = 200_000,
-                   max_scan: int | None = None) -> str:
+                   max_scan: int | None = None,
+                   allow_bluff: bool | None = None) -> str:
     """σに対して凌ぐ応手が「在るか」だけを、走査予算 max_scan つきで判定する。
 
     返り値: "yes"（防御を発見）/ "no"（全応手を走査し1つも無い＝詰み側）/
             "unknown"（応手列挙が cap 超過、または max_scan 内に見つからず未走査が残る）。
     防御ミス率の分母（defended+miss）は "no"/"unknown" を含まない＝予算で打ち切って
     "unknown" に丸めても指標は不変（no_defense証明の全走査コストを避けるための実用版）。
+    allow_bluff＝classify_day と同じ（★B-223・None＝mm_set から自動判定）。
     """
     if sigma is None:
         if not mm_set:
             raise ValueError("sigma か mm_set のどちらかが必要")
         sigma = [(p["target"], p["target_kind"]) for p in mm_set]
     base = _slim(state)
-    contents = enum_mm_sets_for_sigma(base, list(sigma))
+    if allow_bluff is None:
+        allow_bluff = _needs_bluff(base, mm_set)
+    contents = enum_mm_sets_for_sigma(base, list(sigma), allow_bluff)
     if not contents:
         raise ValueError(f"σに整合する脚本家セットが無い: {sigma}")
-    responses = enum_prot_sets(base, contents[0], cap=cap)
+    responses = enum_prot_sets(base, contents[0], cap=cap, allow_bluff=allow_bluff)
     if responses is None:
         return "unknown"
     ocache: dict = {}
@@ -339,7 +392,7 @@ def defense_exists(state: GameState, sigma=None, mm_set=None,
     def outcome(M, R):
         key = (_dedup_key(M), _dedup_key(R))
         if key not in ocache:
-            ocache[key] = _day_outcome(base, M + R, objective)
+            ocache[key] = _day_outcome(base, M + R, objective, allow_bluff)
         return ocache[key]
 
     ordered = _order_responses(base, responses)
@@ -354,23 +407,27 @@ def defense_exists(state: GameState, sigma=None, mm_set=None,
 
 
 def is_defense(state: GameState, response: list[dict], sigma=None, mm_set=None,
-               objective: str = "survive") -> bool:
+               objective: str = "survive",
+               allow_bluff: bool | None = None) -> bool:
     """特定の応手 response が σ に整合する全中身に対して凌ぐか（安価な単一チェック）。
 
     find_defenses が全応手を列挙するのに対し、これは response 1つを σ整合の
     中身（≤百通り程度）に当てるだけ＝|contents| 局で判定できる。
     「AIが実際に打った手は防御だったか」の採点に使う（defense_audit / 係数学習）。
     response の要素は {card,target,target_kind}（owner は無視）。
+    allow_bluff＝classify_day と同じ（★B-223・None＝mm_set から自動判定）。
     """
     if sigma is None:
         if not mm_set:
             raise ValueError("sigma か mm_set のどちらかが必要")
         sigma = [(p["target"], p["target_kind"]) for p in mm_set]
     base = _slim(state)
-    contents = enum_mm_sets_for_sigma(base, list(sigma))
+    if allow_bluff is None:
+        allow_bluff = _needs_bluff(base, mm_set)
+    contents = enum_mm_sets_for_sigma(base, list(sigma), allow_bluff)
     if not contents:
         raise ValueError(f"σに整合する脚本家セットが無い: {sigma}")
     R = [{"card": p["card"], "target": p["target"],
           "target_kind": p["target_kind"]} for p in response]
-    return all(_day_outcome(base, M + R, objective) == PROTAGONIST
+    return all(_day_outcome(base, M + R, objective, allow_bluff) == PROTAGONIST
                for M in contents)

@@ -83,6 +83,42 @@ def set_card_options(state: GameState, owner: str,
     return options
 
 
+def goshinboku_forced_options(state: GameState, used: set[str]) -> list[dict]:
+    """ご神木の特性で脚本家が**強制で**使用する手の一覧（B-233・現物カード 2026-08-16）。
+
+    カード＝「このキャラクターが友好無視を持つ場合、脚本家能力フェイズに脚本家もこの特性を
+    用いる（強制）」。★強制なのは「使用すること」で、どのカウンターを誰へ移すかは脚本家が選ぶ
+    ＝pass を含めない選択肢集合として返す。実行できる組み合わせが無ければ空（＝不発）。
+    """
+    if not role_has_friendship_ignore(state.script.role_of("ご神木")):
+        return []
+    if "ご神木:move" in used:
+        return []
+    from .effects import goshinboku_move_options
+    return [{"action": "ご神木:move", "kind": "goshinboku", "counter": counter, "target": t}
+            for counter, t in goshinboku_move_options(state)]
+
+
+def goshinboku_idle_observed(state: GameState, used: set[str]) -> bool:
+    """★B-234：脚本家能力フェイズの末尾で「**不発生**」が観測できるか（公開情報のみで判定）。
+
+    True ＝「ご神木の上にカウンターがあり、同エリアに生存する他キャラが居るのに、この
+    脚本家能力フェイズで ご神木の特性が使われなかった」。B-233 の是正（強制段）により、
+    **ご神木の役職が友好無視を持つならこの状態にはなり得ない**（`goshinboku_forced_options`
+    が非空 → `sim/flow.py` の強制段が必ず1回使う → `used` に載る）。
+    ∴ True は「ご神木の役職 ∉ 友好無視系」と**同値**＝主人公側の演繹の材料になる。
+
+    ★材料は全て公開情報（生死・エリア・カウンター＝盤上の事実／`sim/views.py` の
+    `_public_char` が主人公ビューへそのまま載せている量）。役職は一切参照しない。
+    ★呼び出し位置は `flow.py` の強制段の**直後**＝`forced` を評価したのと同じ盤面
+    （強制段が発火した局面では `"ご神木:move" in used` で False になる）。
+    """
+    if "ご神木:move" in used:
+        return False
+    from .effects import goshinboku_move_options
+    return bool(goshinboku_move_options(state))
+
+
 def mastermind_ability_options(state: GameState, used: set[str]) -> list[dict]:
     """脚本家能力フェイズの選択肢。各能力は1ターン各1回・自由順（00:109）＋パス。
 
@@ -135,13 +171,11 @@ def mastermind_ability_options(state: GameState, used: set[str]) -> list[dict]:
         for a in AREAS:
             options.append({"action": "不穏な噂", "kind": "anyaku",
                             "target": a, "target_kind": "board"})
-    # ご神木の特性：友好無視を持つ場合、脚本家能力フェイズにも使用（KB: 30。上のカウンター1つを
-    # 同エリアの他キャラへ）。ご神木の初期＝神社固定。1ターン1回（keyで抑止）。
-    if role_has_friendship_ignore(state.script.role_of("ご神木")) and "ご神木:move" not in used:
-        from .effects import goshinboku_move_options
-        for counter, t in goshinboku_move_options(state):
-            options.append({"action": "ご神木:move", "kind": "goshinboku",
-                            "counter": counter, "target": t})
+    # ご神木の特性：友好無視を持つ場合、脚本家能力フェイズに**強制で**使用（KB: 30・現物カード
+    # 確認 2026-08-16。上のカウンター1つを同エリアの他キャラへ）。ご神木の初期＝神社固定。
+    # 1ターン1回（keyで抑止）。★強制の担保は `flow.py` の脚本家能力フェイズ末尾（pass 後の
+    # 取りこぼしを `goshinboku_forced_options` で拾う）＝ここでは自由順の選択肢として出すだけ。
+    options.extend(goshinboku_forced_options(state, used))
     # 医者の友好能力（現物確認済＝★友好無視を持ち、かつ友好2以上のときだけ脚本家能力フェイズに
     # 使用可。KB: 20 医者能力2 / 60 B-4）。同エリアの他キャラから不安1除去 or 付与。拒否は発生しない。
     doc = state.characters.get("医者")

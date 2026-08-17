@@ -23,8 +23,8 @@ from sim.state import (  # noqa: F401  再エクスポート
 LOG_FORMAT_VERSION = 1
 
 
-def _tool_build() -> str:
-    """再現用のビルド識別＝コミット短縮ハッシュ（取れなければ空）。"""
+def _probe_tool_build() -> str:
+    """git からコミット短縮ハッシュを読む（取れなければ空）。★import 時に1回だけ呼ぶ。"""
     import subprocess
     try:
         return subprocess.check_output(
@@ -32,6 +32,17 @@ def _tool_build() -> str:
             stderr=subprocess.DEVNULL, timeout=3).decode().strip()
     except Exception:  # noqa: BLE001  gitが無い/リポジトリでない等
         return ""
+
+
+# ★U-14（2026-08-08）：ビルド識別は**モジュールロード時に1回だけ**評価して固定する。
+#   保存のたびに git を読むと、アプリ起動後に git が進んだとき「ロードされていない
+#   コードのSHA」が棋譜に記録される（B-191 Phase 0 で実害確定＝切り分けを誤らせた）。
+_TOOL_BUILD = _probe_tool_build()
+
+
+def _tool_build() -> str:
+    """再現用のビルド識別＝**ロード時に固定した**コミット短縮ハッシュ（取れなければ空）。"""
+    return _TOOL_BUILD
 
 
 def utc_saved_at() -> str:
@@ -361,6 +372,7 @@ def split_day_tail(log: list[dict], human_seats, day_key: tuple[int, int]
       final_battle_guess が3手目で非合法）。これらは再生せず、到達時に改めて決定する（＝最後の戦いは
       ユーザーがもう一度宣言する＝正しい挙動）。
     """
+    from sim.flow import log_safe_chosen              # ★B-115：prov 剥がしの単一ソース
     _OUT_OF_DAY = {"final_battle", "loop_start"}      # run_day の外＝日単位の再生対象外
     before_human = 0
     human_day: list[dict] = []
@@ -374,10 +386,15 @@ def split_day_tail(log: list[dict], human_seats, day_key: tuple[int, int]
         elif k == day_key:
             if e.get("phase") in _OUT_OF_DAY:
                 continue                              # ★A-39：日外の決定は再生しない
+            # ★B-115：再生素材から表示層の prov（B-100 上書き席="b100"／一致席=
+            #   "b100_match"）を剥がす。ログ内の chosen は options 内の同一オブジェクト＝
+            #   ライブ整合は identity で保たれるが、復元の合法手照合は**新規列挙の options**
+            #   と dict 同値で行われる＝prov が残ると ReplayDesync になる（実測＝
+            #   tests/test_log_snapshot_restore.py）。
             if is_human:
-                human_day.append(e["chosen"])
+                human_day.append(log_safe_chosen(e["chosen"]))
             else:
-                ai_day.setdefault(e["actor"], []).append(e["chosen"])
+                ai_day.setdefault(e["actor"], []).append(log_safe_chosen(e["chosen"]))
     return before_human, human_day, ai_day
 
 

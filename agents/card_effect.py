@@ -31,7 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from engine.board import destination
-from engine.data import forbidden_of
+from engine.data import forbidden_of, unrest_threshold_of
 
 # 主人公の移動カード（斜めは無い）。heuristic_protagonist._MOVE_TOGGLE と同一。
 MOVE_TOGGLE: dict[str, tuple[int, int]] = {"移動←→": (1, 0), "移動↑↓": (0, 1)}
@@ -78,6 +78,14 @@ class NoopCtx:
     gw_final_void: frozenset = frozenset()      # (キャラ, step) ＝最終日に置いても新規解禁が無い
     gw_final_harm: frozenset = frozenset()      # 上のうち因果の糸で有害になるキャラ（友好0のとき）
     unrest_void: frozenset = frozenset()        # 不安-1 が算術的にゼロなキャラ（残り事件0 等）
+    # ★B-155（G2 の例外条項に**距離の条件**を足す切替口）。**既定 None＝判定しない**＝
+    #   材料が無い＝**既存の呼び出し側（defense_plan・b100_mix 等）の挙動は完全に不変**。
+    #   意味＝「不安0＋mm札あり」の例外を認める上限距離（`th - unrest <= gap` の時だけ例外）。
+    unrest_decoy_gap: int | None = None
+    #: ★B-155 変種＝距離の条件を **L1D1（情報ゼロの初手）だけ**に限る（既定 False＝全ターン）。
+    #  ユーザー指摘の現物が L1D1／L1D2 であること＋B-45 の L1D1 定石との席の取り合いが
+    #  実測されていることから、**最も狭い述語**として用意した掃引口。
+    unrest_decoy_opening_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -221,6 +229,24 @@ def noop_reason(view: dict, card: str, target: str, target_kind: str,
         c = _alive(view, target)
         if c and c.get("unrest", 0) == 0 and target not in ctx.mm_chars:
             return Noop("不安0＋mm札なし＝床0で空振り", NOOP_SCORE)
+        # --- B-155：例外条項（mm札あり）に**距離の条件**を足す（既定 None＝無効） -------
+        # ルール接地（**距離の部分は規則が決めない＝価値の話**。ここで規則が言うのは
+        # 「重なった時の順序」だけ＝`rules/10_action_cards.md:35`『不安-1』と重なると
+        # 『不安+1』が先。∴ 不安0の対象では、mm札が `不安+1` でない限り `不安-1` は
+        # 床0で**算術的にゼロ**）。ところが**伏せ札の中身は見えない**（`sim/views.py:41-49`）＝
+        # 「mm札がある」だけを例外にすると、脚本家の `移動` 札がそのまま冷却札を焼く囮になる
+        # （ユーザー実戦 2026-08-04・B-155）。∴ **臨界までの距離**で例外を絞る：
+        #   `th - unrest <= gap` ＝ gap=1 なら「今日の +1 が当たれば臨界に届く」対象だけ。
+        # ★`不安-1` は 1/loop（`engine/models.py:29`）＝チーム3枚/ループ。対して `不安+1` は
+        #   毎日戻る2枚（同 `:38`・`sim/flow.py:251-255`）＝遠い対象への先回りは常に負ける勘定。
+        if (c and c.get("unrest", 0) == 0 and target in ctx.mm_chars
+                and ctx.unrest_decoy_gap is not None
+                and (not ctx.unrest_decoy_opening_only
+                     or (view.get("loop") == 1 and view.get("day") == 1))):
+            th = unrest_threshold_of(target)
+            if th and (int(th) - int(c.get("unrest", 0) or 0)) > ctx.unrest_decoy_gap:
+                return Noop("不安0＋mm札はあるが臨界まで遠い＝今日の不安+1でも届かない"
+                            "（囮で 1/L 冷却札を焼く）", NOOP_SCORE)
         # --- G10（B-109）：不安を参照する帰結がこのループにもう存在しない -----------------
         # ルール接地：
         #   - 不安カウンターの効果は「事件の発生条件」だけ（`rules/00:30,38`＝不安臨界以上で

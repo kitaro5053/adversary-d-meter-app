@@ -65,6 +65,21 @@ MASTERMIND = "mastermind"
 PROTAGONIST = "protagonist"
 CONTESTED_V = "contested"
 
+#: ★B-199 切替口（2026-08-11）＝事件「行方不明」の**ボード暗躍供給**を止まらない打点に数えるか。
+#  ★既定 False＝**本チケット以前の挙動へ bit 復帰**。会計そのものは KB どおり（`_incident_feed_boards`）
+#  だが、True にすると `sim/generator` のリジェクト判定（`race_ok`）が変わり、
+#  **5日級コーパスの `random_BTX#10` が別脚本に差し替わる＝再ベースライン**になるため
+#  （実測＝3日級は bit 一致・5日級は当該1局のみ入替＝防衛64→65・平均3.414→3.300）、
+#  既定の切替は FableA の統制（再ベースラインを1回にまとめる＝規約 §7）に委ねる。
+#  検死・判定器としての正しい値が要る場面（`arena/postmortem` 等）では True にして使う。
+B199_MISSING_INCIDENT_FEED = True   # ★既定 ON（2026-08-16・ユーザー裁定「FB必須な脚本はNG扱いしてよい」＝race=mastermind 型をコーパスから排除・§72-18。是正の中身＝§67-7）
+
+#: 事件効果が置くボード暗躍の量（KB: `rules/50_basic_tragedy_x.md:199`＝邪気の汚染は神社に2／
+#  同 `:212`＝行方不明は「その後、**犯人のいるボード**に暗躍カウンターを1つ置く」）。
+#  ★これ以外の事件はボードに暗躍を置かない（不安拡大・蝶の羽ばたきは**キャラ**対象＝
+#  `rules/40:149` / `rules/50:218`。A-78 §2d の完全列挙と一致）。
+BOARD_FEED_INCIDENTS: dict[str, int] = {"邪気の汚染": 2, "行方不明": 1}
+
 
 @dataclass
 class PathRace:
@@ -105,10 +120,19 @@ def _has_board_removal(state, board: str) -> bool:
         なら、そのキャラへの友好+を永久に止められる（1ターンの+は最大2）。
         よって「既に必要ハーツ解禁済み」か「非拒否ホルダーが2人以上（両方は
         止められない）」の時だけ実在（btx_seal実測：巫女♡3を友好禁止で飢餓させ、
-        黒猫+噂の止まらない2点で毎ループ封印成立＝除去は幻だった）。"""
+        黒猫+噂の止まらない2点で毎ループ封印成立＝除去は幻だった）。
+
+    ★B-140（2026-08-02）：対象範囲の判定を `abilities.board_anyaku_removal_scope`
+    （`ABILITY_IMPL["board_scope"]`＝targets 実装と同じ行の宣言）へ委譲＝単一ソース化。
+    旧実装は「能力名に "暗躍除去" を含む」＋「巫女だけ神社限定」で判定しており、
+    **転校生**（KB rules/20:123＝同一エリアの他キャラ1人＝板は対象外）を
+    任意の板の除去役に数えていた（`agents/heuristic.py` と同型の食い違い）。
+    標準コーパスでは verdict 変化 0/130（3日級）・0/70（5日級）＝潜在バグだった。"""
     from engine.data import (UNREFUSABLE_ABILITY_CHARS,
                              role_absolute_friendship_ignore,
                              role_has_friendship_ignore)
+
+    from .abilities import board_anyaku_removal_scope
     locked_holders = 0
     for n, c in state.characters.items():
         if not c.alive:
@@ -118,10 +142,8 @@ def _has_board_removal(state, board: str) -> bool:
                 or role_absolute_friendship_ignore(c.role)):
             continue                     # 脚本家が拒否する＝除去は成立しない
         for ab in goodwill_abilities_of(n) or []:
-            if "暗躍除去" not in ab["name"]:
-                continue
-            if n == "巫女" and board != "神社":
-                continue                 # 巫女の除去は神社限定
+            if board not in board_anyaku_removal_scope(n, ab["name"]):
+                continue                 # その板を対象に取れない能力は数えない
             if c.goodwill >= ab["hearts"]:
                 return True              # 解禁済み＝もう止められない
             locked_holders += 1
@@ -150,6 +172,30 @@ def _goal_boards(state) -> set:
     # ★病院の事件は「ループ終了時の盤面敗北条件」ではなく事件効果（病院暗躍≥1で殺害）＝
     #   incident_kill パスで会計する（ここでゴールボード扱いしない＝誤判定を防ぐ）。
     return goal
+
+
+def _incident_feed_boards(state, name: str, culprit: str) -> frozenset[str]:
+    """事件 `name`（犯人 `culprit`）が**ボード暗躍を置きうる板**の集合（KB そのまま）。
+
+    - **邪気の汚染**＝神社に固定（`rules/50:199`。キャラを動かさない）。
+    - **行方不明**＝「犯人を任意のボードへ移動 → **犯人のいるボード**に暗躍1」（`rules/50:212`）。
+      ★移動先に**犯人の禁止エリアは選べない**（公式裁定＝`rules/50:213`・`rules/40:160`・E-2）。
+      現在地は常に選べる＝**候補は空にならない**（実質不動の犯人でも現在地には置ける）＝A-78 §1。
+      解除（医者の友好能力3／女の子の友好能力1）は `sim.state.current_forbidden` が単一ソース。
+    - ★**犯人が黒猫なら空**＝黒猫特性2「このキャラクターが犯人の事件の事件効果は
+      『何も起きない』に変更される」（`rules/30_characters.md:78`。発生宣言はされるが盤面は動かない。
+      裁定の実装＝`sim/effects.py:381-382`）。
+    """
+    if culprit == "黒猫":
+        return frozenset()
+    if name == "邪気の汚染":
+        return frozenset({"神社"})
+    if name == "行方不明":
+        from engine.board import AREAS
+
+        from .state import current_forbidden
+        return frozenset(AREAS) - current_forbidden(state, culprit)
+    return frozenset()
 
 
 def _kuromaku_count(state) -> int:
@@ -187,9 +233,20 @@ def _board_path(state, board: str, days_left: int) -> PathRace:
     # （2026-07-08：黒猫を外した btx_seal が誤って mastermind のままになった実測）。
     # 拮抗の邪気は冷却の需要として別カウント（不安-1は席ごとに使える＝暗躍禁止の
     # 1枚制限とは別資源なので、被覆（kinshi_sources）には数えない）。
+    # ★B-199（2026-08-11）：**行方不明**も事件効果でボードに暗躍+1 を置く（`rules/50:212`）＝
+    #   邪気の汚染と同型の「暗躍禁止で止まらない打点」。旧実装は邪気の汚染だけを数えており、
+    #   行方不明由来の供給が勘定から落ちていた（BTX#10＝噂1＋行方不明1＝臨界2 を取り落とし、
+    #   loop_solver の mate 証明書と食い違って protagonist と判定していた）。
+    #   供給先の板は `_incident_feed_boards`（禁止エリア・黒猫特性2 を KB どおりに反映）。
     for f in incident_feasibility(state.script):
-        if f.grade == FORCED and f.day >= state.day and f.name == "邪気の汚染" and board == "神社":
-            once += 2
+        if f.grade != FORCED or f.day < state.day:
+            continue
+        if f.name not in BOARD_FEED_INCIDENTS:
+            continue
+        if f.name == "行方不明" and not B199_MISSING_INCIDENT_FEED:
+            continue
+        if board in _incident_feed_boards(state, f.name, f.culprit):
+            once += BOARD_FEED_INCIDENTS[f.name]
     # ★塞げない供給は「主人公が位置で妨害できないもの」に限る＝不穏な噂（ボード直指定）・
     #   確実な事件・既存カウンター（除去役なし）。クロマクのボード注ぎは主人公がクロマクを
     #   ボードから引き離せば止まる（移動＝位置で対処＝塞げる側）。カルティスト無視も同様に

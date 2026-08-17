@@ -28,7 +28,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from agents.card_effect import NoopCtx, noop_reason
-from engine.data import initial_area_of
+from engine.data import (SHOUJO, UNREFUSABLE_ABILITY_CHARS, ability_kind,
+                         goodwill_abilities_of, initial_area_of, is_student,
+                         role_has_friendship_ignore, unrest_threshold_of)
 
 # 盤面ジオメトリ（上段=病院/神社・下段=都市/学校）
 _AREAS = ("病院", "神社", "都市", "学校")
@@ -89,8 +91,18 @@ class Threat:
     conditions: list[Condition] = field(default_factory=list)
     note: str = ""
     # ★表示用フラグ（B-1・2026-07-13・AIA表示層との結合点）：
-    breached: bool = False   # 既に敗北判定域（板暗躍≥2等）＝突破済み。💀 表示・意思決定は覆えない。
+    # 既に敗北判定域（板暗躍≥2等）＝突破済み。💀 表示・意思決定は覆えない。
+    # ★B-170：板暗躍の場合だけ例外がある＝巫女/神格の友好能力なら剥がせる（実測では射程ほぼ空）。
+    breached: bool = False
     race: bool = False       # 「防御不能」ではなくレース（移動可クロマク供給等＝位置/情報で勝つ）。
+    # ★B-176（2026-08-07）：**発火予定日**＝この脅威が最初に発火しうる日（同ループ内・1始まり）。
+    #   ターン終了フェイズ系＝当日／事件フェイズ系＝その事件の日／ループ終了フェイズ系＝最終日。
+    #   None＝不明（当夜資格の対象にしない安全側）。Phase 1 計測の label 文字列照合を
+    #   実装に持ち込まないためのフィールド化（監査 B176 Phase1 §7-1 の前提部品）。
+    due_day: int | None = None
+    # ★B-176 感度層：board_defeat で対象板の暗躍が既に臨界-1＝**今夜1枚で不可逆化**しうる印
+    #   （発火＝敗北判定は最終日でも、覆える最後の夜は今日かもしれない）。
+    imminent: bool = False
 
     @property
     def severity(self) -> float:
@@ -331,6 +343,88 @@ def _alive(view: dict, name: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# ★B-130（2026-08-02）：抑止役（不安カウンターを取り除ける友好能力の担い手）の単一ソース
+# ---------------------------------------------------------------------------
+# 起票＝トリアージ 2026-08-01 §B-130（手練れ指摘）「男子学生に友好+2 が載っているので、
+# 学生であるお嬢様がその場にとどまるなら不安+1 を載せられても事件発生を抑止できる」。
+#
+# KB 接地（`rules/20_goodwill_abilities.md`。行番号は 07a7b33 時点）：
+#   男子学生／女子学生『学生の不安除去』♡2・回数無制限・**同一エリアの自身以外の学生1人**
+#       ＝`:36`,`:37`（一覧）／`:89-92`（本文）／`:292`,`:293`（実カード書き起こし）
+#   医者『不安操作（除去/付与）』♡2・無制限・同一エリアの自身以外1人 ＝`:46`／`:225-229`／`:297`
+#   ナース『不安臨界以上のキャラの不安除去』♡2・無制限・**不安が臨界以上**の同エリア1人
+#       ＝`:66`／`:238-241`／`:306`（★友好無視/絶対友好無視で拒否されない＝`:242`）
+#   アイドル『不安除去』♡**3**・無制限・同一エリアの自身以外1人 ＝`:48`／`:178-182`／`:303`
+#   教師『学生の不安操作』♡**3**・無制限・同一エリアの学生1人 ＝`:52`／`:112-116`／`:316`
+# ＝「どの能力が不安除去か」の単一ソースは `engine.data.ABILITY_KINDS` の `軽量不安除去`
+#   （キャラ名の羅列を本モジュールに複製しない＝二重実装の禁止）。
+#
+# ★安全側の既定＝**使えることが確定できる時だけ True**（過大主張を作らない）。
+_SUPPRESSOR_KIND = "軽量不安除去"
+#: 抑止役の役職が友好無視/絶対友好無視である疑いがこれ以上なら「拒否されうる」＝数えない。
+SUPPRESSOR_IGNORE_P = 0.15
+
+
+def _friendship_ignore_prob(roles: dict | None, name: str) -> float:
+    """belief 上で name が friendship-ignore 系の役職である確率（roles=None なら 0.0）。"""
+    dist = (roles or {}).get(name) or {}
+    return sum(p for r, p in dist.items() if role_has_friendship_ignore(r))
+
+
+def suppressors_for(view: dict, target: str, *, roles: dict | None = None,
+                    require_funded: bool = True) -> list[str]:
+    """`target` の不安を**今ターンの主人公能力フェイズで**1つ取り除ける同エリアの抑止役。
+
+    すべて公開情報（位置・友好カウンター・キャラ名）だけで確定する条件：
+      (1) 抑止役が生存し `target` と**同一エリア**・`target` 自身ではない
+      (2) その友好能力の kind が `軽量不安除去`（`engine.data.ABILITY_KINDS`）
+      (3) **回数無制限**（1/L は「もう使ったか」を公開情報から確定できない＝安全側で除外）
+      (4) 友好カウンターが**必要友好数以上**（＝今ターン既に解禁されている）
+      (5) 対象クラスの限定を満たす（能力名に「学生」＝`target` が学生・`engine.data.is_student`）
+      (6) 「不安臨界以上」限定（ナース）＝`target` の不安が臨界以上（臨界不明なら不可）
+      (7) 脚本家に拒否されない見込み（役職が友好無視/絶対友好無視である belief 上の確率が
+          `SUPPRESSOR_IGNORE_P` 未満。ただし `UNREFUSABLE_ABILITY_CHARS` は拒否不可＝常に可）
+    `roles=None` は (7) を判定しない＝**緩い**列挙（監査の対照用）。
+    `require_funded=False` は (4) を判定しない＝「投資すれば抑止役になりうる同席者」の列挙
+    （監査の参考値専用。防御判断には使わない）。
+    """
+    tc = _char(view, target)
+    if not tc or not tc.get("alive", True):
+        return []
+    area = tc.get("area")
+    if area is None:
+        return []
+    out: list[str] = []
+    for c in view.get("characters", []) or []:
+        name = c.get("name")
+        if name == target or not c.get("alive", True) or c.get("area") != area:
+            continue
+        abilities = goodwill_abilities_of(name)
+        if not abilities:
+            continue                      # 未収録(None)も能力なし([])も対象外
+        gw = int(c.get("goodwill", 0) or 0)
+        for ab in abilities:
+            if ability_kind(name, ab["name"]) != _SUPPRESSOR_KIND:
+                continue
+            if ab.get("once_per_loop"):
+                continue                  # (3) 使用済みか確定できない＝安全側で除外
+            if require_funded and gw < int(ab.get("hearts", 99)):
+                continue                  # (4) 未解禁
+            if "学生" in ab["name"] and not is_student(target):
+                continue                  # (5) 対象クラス限定
+            if "臨界以上" in ab["name"]:
+                th = unrest_threshold_of(target)
+                if th is None or int(tc.get("unrest", 0) or 0) < th:
+                    continue              # (6) ナース＝臨界未満には使えない
+            if roles is not None and name not in UNREFUSABLE_ABILITY_CHARS \
+                    and _friendship_ignore_prob(roles, name) >= SUPPRESSOR_IGNORE_P:
+                continue                  # (7) 拒否されうる
+            out.append(name)
+            break
+    return out
+
+
+# ---------------------------------------------------------------------------
 # options インデックス（「この防御が手札にあるか」を高速に引く）
 # ---------------------------------------------------------------------------
 class _Opts:
@@ -377,6 +471,114 @@ DP6_SUPPLY_LEDGER = True
 #:   封印されしモノ＝神社（rules/50:38）／巨大時限爆弾X＝ボードX（rules/50:52）。
 #:   4ルールとも「暗躍カウンターが2つ以上」＝閾値2以外の板敗北ルールは FS/BTX に無い。
 BOARD_DEFEAT_ANYAKU = 2
+
+#: 遠隔殺人の的化の閾値＝**キャラの暗躍2**（`rules/40_first_steps.md:152`／
+#:   `rules/50_basic_tragedy_x.md:209`＝「暗躍カウンターが2つ以上置かれているキャラクターが
+#:   いる場合、その中から任意の1人を死亡させる」）。板敗北(BOARD_DEFEAT_ANYAKU)とは別の条文。
+REMOTE_MURDER_ANYAKU = 2
+
+# ★B-184（2026-08-07・§60-9）：planner の break 生成に void 判定を共有させる切替口。
+#   True＝board_defeat の「今夜打つ前提」の文脈（最終日 or 板の暗躍≥1＝今夜1枚で
+#   不可逆化）で、mm がその板に今ターン伏せていない（void）暗躍禁止 break を生成しない。
+#   B-183 §5-2 の実測＝空振りフィルタ門 63/63T すべて void＝pick 側の過大主張。
+#   ★非当夜（非最終日かつ暗躍0）は従来どおり break を残す＝「暗躍禁止を保持して
+#   mm の伏せに備える」複数夜の計画価値を殺さない（監査 B-183 §6-2 の狭め）。
+#   既定 False＝挙動 bit 不変。テスト＝tests/test_b184_void_breaks.py。
+B184_VOID_AWARE_BREAKS = True
+
+
+def board_kinshi_void(view: dict, area: str) -> bool:
+    """★B-184：板への暗躍禁止が**今夜確実にゼロ効果（void）**か＝mm がその板に
+    今ターン伏せていない＝打ち消す暗躍+が無い（`rules/10_action_cards.md:61`＝
+    暗躍禁止は当ターンの札・盤に残らない。mm の配置位置は公開情報）。
+
+    ★void 判定の**単一ソース**＝席側 `b100_mix.futile_reason` の板枝もここを呼ぶ
+    （B-183 §5-2 が特定した「planner だけが void を見ない」乖離の是正）。
+    """
+    return area not in _mm_touched(view)[1]
+
+# ★B-187（2026-08-07・§61(1) ユーザー実戦）：僕と契約しようよ！の脅威候補を
+#   **少女（engine.data.SHOUJO）との交差に限る**切替口。
+#   KB＝`rules/50_basic_tragedy_x.md:42`「キーパーソンは**必ず少女**」＝
+#   非少女（学者・サラリーマン等＝大人・男性）は契約の敗北対象になりえない（KBが一意に決める可否）。
+#   機序＝belief 側は少女限定を同時分布で実装済み（`agents/belief.py:163-215`）だが、
+#   `_threat_kp_anyaku` は `contract_prob × P(KP周辺)` の**独立近似**で掛けるため、
+#   殺人計画など契約以外のルール組由来の非少女 P(KP周辺)>0 が漏れ込んでいた
+#   （正しい同時確率 P(契約 ∧ KP=非少女) は 0）。
+#   ★同型の複製列挙器 `agents/attack_plan._contract_threats`（mm の圧力オラクル）も
+#   **この同じフラグ**を読む（写しのフラグを作らない）。
+#   既定 False＝挙動 bit 不変。テスト＝tests/test_b187_contract_shoujo.py。
+B187_CONTRACT_SHOUJO_ONLY: bool = True
+
+# ★B-134（2026-08-01）ablation トグル（DP-6 の作法・既定＝修正後）：
+#   False＝旧挙動（距離を**カウンタ個数**だけで測る＝`暗躍+2` が1枚で2個載ることを
+#   数えない）に bit 復帰する。CF帰属・変異テスト専用。本番は True。
+B134_CARD_DISTANCE = True
+
+#: ★B-134：距離の是正を適用してよい `rule_p`（＝P(その板が敗北ボード)）の下限。
+#:   1.0（＝可能世界が全てその板を指す＝**確定**）だけに絞る＝
+#:   「**確定できる時だけ距離を詰める**」（B-113／B-132 の安全側の流儀）を
+#:   〈残弾〉と〈敗北板の同定〉の**両方**へ適用する。掃引用に定数として置く。
+#:   実測（§5b）＝この絞りを外すと 3日級 id で per-game 退行1（`random_FS#0` 3→4・
+#:   rule_p=0.978 の板が `PLAN_HOT` を跨いで移動3席を食う）。
+B134_RULEP_CERTAIN = 1.0 - 1e-9
+
+
+def mm_plus2_spent(view: dict) -> bool | None:
+    """脚本家の **`暗躍+2`（1/loop）がこのループで既に消費されたか**（公開情報）。
+
+    - `True`  ＝消費済み（もう出せない）
+    - `False` ＝未消費（まだ出せる）
+    - `None`  ＝**判定材料が無い**（view に `used_cards` が無い）＝主張しない
+
+    根拠＝`view["used_cards"]["mastermind"]` は公開情報（`sim/views.py` `_common`）。
+    1/loop 札は解決後に手札へ戻らない（`rules/00_rules_core.md:108`／
+    `engine/models.py` ONCE_PER_LOOP／`sim/flow.py:251-255`）。暗躍禁止で打ち消されても
+    消費される（B-132 §1-a-3 の実測）。
+
+    ★**単一ソース**＝`card_supply_max`（B-132 の残弾会計）と `anyaku_card_reach`
+      （B-134 の距離会計）の両方がここを読む。**不明（None）のときの倒し方は
+      呼び出し側が決める**（両者で安全側の向きが逆＝各関数の docstring 参照）。
+    """
+    uc = view.get("used_cards")
+    if not isinstance(uc, dict) or "mastermind" not in uc:
+        return None
+    return "暗躍+2" in (uc.get("mastermind") or [])
+
+
+def days_left_in_loop(view: dict) -> int:
+    """このループに残っている日数（今日を含む）。"""
+    dpl = int(view.get("days_per_loop") or view.get("day", 1) or 1)
+    return max(0, dpl - int(view.get("day", 1)) + 1)
+
+
+def card_supply_max(view: dict) -> int:
+    """★B-132：mm が**行動解決の暗躍カード**で1つの的に積める、このループの残り上限。
+
+    `残り日数 ＋ (2 if 暗躍+2 が未消費)`（暗躍+1 は毎日再利用・暗躍+2 は 1/loop）。
+    ★mm 側 `agents/heuristic.py:1398-1399` の `_card_supply` と**同じ式の鏡像**。
+    ★不明（`mm_plus2_spent` が None）＝**未消費と仮定**＝上限を大きく見る＝
+      「札では届かない」と主張しない側＝B-132 の安全側（見切らない）。
+    """
+    return days_left_in_loop(view) + (0 if mm_plus2_spent(view) is True else 2)
+
+
+def anyaku_card_reach(view: dict) -> int:
+    """★B-134：mm が**1枚の暗躍カード**で1つの的へ載せられるカウンタの最大値。
+
+    - `暗躍+1` ＝ 1（毎日出せる）
+    - `暗躍+2` ＝ **2**（1/loop・`rules/10_action_cards.md:39`「セットされたキャラまたは
+      **ボード**に暗躍+2」・`engine/models.py:43` `ANRYAKU_PLUS`）
+
+    ∴ 返り値は **2（`暗躍+2` の残弾が公開情報から確定でき、かつ出す日が残っているとき）**
+    か **1**。★**安全側の原則（B-113／B-132 の流儀）＝「確定できる時だけ距離を詰める」**：
+    `mm_plus2_spent` が `None`（判定材料なし）や `True`（消費済み）なら **1**＝従来どおり。
+    """
+    if not B134_CARD_DISTANCE:
+        return 1
+    if mm_plus2_spent(view) is False and days_left_in_loop(view) >= 1:
+        return 2
+    return 1
 
 
 def unstoppable_supply_gap(view: dict, area: str, cur: int,
@@ -513,9 +715,16 @@ def _cultists_on_area(view, roles, area) -> list:
             if (_char(view, n) or {}).get("area") == area and _alive(view, n)]
 
 
-def _add_kinshi_break(c1: "Condition", opts, area, view, roles, label) -> None:
+def _add_kinshi_break(c1: "Condition", opts, area, view, roles, label,
+                      tonight: bool = False) -> None:
     """area の行動解決暗躍を断つ『暗躍禁止』Breakを、カルティスト無効化を考慮して足す（B-8）。
     カルティスト疑いが area に居ると暗躍禁止は無視されうる＝robust=False に落とす。
+
+    ★B-184：`tonight=True`（呼び出し側が「今夜打つ前提」の文脈だと宣言した時）かつ
+      切替口 ON かつ void（mm がその板に今ターン伏せていない＝`board_kinshi_void`＝
+      席側 futile_reason と同じ単一ソース）なら break を**生成しない**（今夜確実に
+      ゼロ効果の札を pick させない＝B-183 §5-2）。既定 `tonight=False`＝従来どおり
+      ＝非当夜の計画文脈・他の呼び出し元（病院アーム等）は触らない。
 
     ★DP-4（2026-07-29）の是正2点：
       (1) 「カルティストを移動で剥がす」を**単独の折り手にしない**。カルティストを剥がしても
@@ -526,6 +735,11 @@ def _add_kinshi_break(c1: "Condition", opts, area, view, roles, label) -> None:
           （＝効かないかもしれない）暗躍禁止の方が、確実に効く暗躍禁止(1.0)より安い**という
           逆転が起きており、プランナーが好んでカルティストの居る板へ暗躍禁止を回していた。
     """
+    if B184_VOID_AWARE_BREAKS and tonight and board_kinshi_void(view, area):
+        c1.note = c1.note or (
+            f"mmが{area}に今ターン伏せていない＝暗躍禁止は今夜空振り（void）"
+            "＝今夜打つ折り手にしない（mmが伏せた夜に改めて折る）")
+        return
     if not opts.has_board("暗躍禁止", area):
         return
     cult = _cultists_on_area(view, roles, area)
@@ -577,7 +791,19 @@ def _add_anyaku_supply_breaks(c1: "Condition", view, roles, opts, victim,
             _cur_b = int((view.get("board_anyaku") or {}).get(area, 0) or 0)
             # ★gap<=0 には「既に暗躍が閾値以上」も含まれる＝既に真の到達条件は供給停止では
             #   偽にできない（暗躍カウンターを減らす手段は主人公の手札に無い＝KB:00・
-            #   DP-4 #22 と同じ理屈）。旧実装は cur を見ずに暗躍禁止を折り手にしていた
+            #   DP-4 #22 と同じ理屈）。
+            # ★B-170（2026-08-05）＝**「手札に無い」は正しいが「手段が無い」は誤り**：
+            #   板の暗躍は**友好能力**で剥がせる（`rules/20_goodwill_abilities.md:129` 巫女
+            #   「神社の暗躍除去」♡3・神社に居るときのみ・回数無制限／`:153` 神格
+            #   「暗躍除去（キャラ/ボード）」♡5・自ボード・回数無制限）。しかも
+            #   主人公能力フェイズ(6) は事件(7)・ループ終了処理(9) より前
+            #   （`rules/00_rules_core.md:97-115`）＝**板敗北の判定前に間に合う**。
+            #   ★それでも折り手（Break）を足していないのは**射程が実測でほぼ空だから**：
+            #     「その板の上に浄化係が立っていて友好も足りている席」は
+            #     3日級130局・5日級70局とも **0**（`arena/b170_audit.py count`・
+            #     `docs/監査_B170_板の暗躍は剥がせる_2026-08-05.md` §3）。
+            #     巫女は**神社しか**剥がせず、神格はキャスト入りが 3日級5局／5日級5局のみ。
+            #   旧実装は cur を見ずに暗躍禁止を折り手にしていた
             #   ＝防御可能側の過大主張＝同時に是正。
             unstop = unstoppable_supply_gap(
                 view, area, _cur_b, BOARD_DEFEAT_ANYAKU,
@@ -612,7 +838,8 @@ def _add_anyaku_supply_breaks(c1: "Condition", view, roles, opts, victim,
                 "暗躍禁止", victim, "character", 1.0, robust=True))
     if not c1.breaks:
         c1.note = ("既に暗躍が2以上＝供給を止めても戻せない"
-                   "（暗躍カウンターを減らす手段は無い）"
+                   "（板の暗躍を減らす行動カードは無い。剥がせるのは巫女♡3〔神社限定〕/"
+                   "神格♡5〔自ボード〕の友好能力だけ＝B-170）"
                    if unstop and _cur_b >= BOARD_DEFEAT_ANYAKU and DP6_SUPPLY_LEDGER
                    else
                    "止まらない供給（不穏な噂1/loop）だけで暗躍2に届く＝"
@@ -664,15 +891,36 @@ def _threat_factor_kp(view, roles, opts, supply_rumor: bool = False,
             _add_anyaku_supply_breaks(c_acq, view, roles, opts, None, "都市",
                                       supply_rumor, rumor_left=rumor_left)
         c_kill = Condition("KP能力獲得ファクターがキラーに殺される（同エリア）")
-        for mc in opts.move_cards_for(fa):
-            if not _noop_char(view, mc, fa, roles):
-                c_kill.breaks.append(Break(f"{fa}をキラーから移動で引き離す",
-                                           mc, fa, "character", 1.3, robust=False))
+        # ★B-165（2026-08-05）：ファクターがお嬢様/大物（＋友好4の追加対象）で、
+        #   **同エリアのキラー疑いが従者**なら、ファクターを動かしても従者が追随する
+        #   （`rules/30_characters.md:65`）＝同エリアは崩れない＝この移動は折り手にならない。
+        #   B-153b が `_sk_pair_threats` に入れたのと**同じ述語・同じ機序**（§B-165 doc §4-1）。
+        #   ★Phase 2b（FableA 差し戻し・2026-08-05）＝**消すだけでは c_kill が折れなくなる**ので、
+        #     追随が発火しない側の有効な手＝**従者（キラー疑い）を単独で動かす**を足す
+        #     （`rules/30:65` の追随は「主が移動する場合」だけ＝従者単独の移動は成立する）。
+        #     ★足すのは従者が同エリアの**唯一の**キラー疑いのときだけ（狭い述語）。
+        _b165_drag = (B165_PAIR_BREAK and "従者" in near and juusha_drags(view, fa))
+        if not _b165_drag:
+            for mc in opts.move_cards_for(fa):
+                if not _noop_char(view, mc, fa, roles):
+                    c_kill.breaks.append(Break(f"{fa}をキラーから移動で引き離す",
+                                               mc, fa, "character", 1.3, robust=False))
+        elif set(near) == {"従者"}:
+            _bad_for_ju = frozenset(
+                a for f2 in factors
+                if f2 != fa and _alive(view, f2)
+                and (a := (_char(view, f2) or {}).get("area")))
+            c_kill.breaks.extend(_relocate_breaks(
+                opts, "従者", area,
+                "★{n}（キラー疑い）を{a}から{how}で動かす（ファクターを動かすと追随＝30:65）",
+                B165_JUUSHA_MOVE_COST, view=view, roles=roles,
+                avoid_areas=_bad_for_ju))
         # ★DP-4：『キラーを移動禁止で固定』は**この条件を折らない**（→ _threat_kp_killer の
         #   同型と同じ機序＝§2 過大主張A）。ファクターとキラーは既に同エリア＝ピンは同居を
         #   維持するだけで、引き離しにはならない。折り手から外す。
         out.append(Threat("factor_kp", f"KP能力獲得ファクター{fa}＝死亡でループ終了",
-                          prob, True, "ターン終了フェイズ", [c_acq, c_kill]))
+                          prob, True, "ターン終了フェイズ", [c_acq, c_kill],
+                          due_day=view.get("day")))
     return out
 
 
@@ -701,12 +949,39 @@ def _threat_kp_killer(view, roles, opts, supply_rumor,
             prob = min(0.95, prob * 1.4)
         # 条件1：キラーとKPが同エリア（引き離す or キラーを固定）
         c1 = Condition("キラーとKPが同エリア")
-        if not _cannot_move_now(view, kp):   # B-21b：動けないKPは移動で引き離せない
+        # ★B-165（2026-08-05）：KP がお嬢様/大物（＋友好4の追加対象）で、**同エリアのキラー疑いが
+        #   従者**なら、KP を動かしても従者が追随する（`rules/30_characters.md:65`）＝
+        #   「キラーとKPが同エリア」は崩れない＝**この条件の唯一の折り手が空振り**になる。
+        #   ★c1 には KP 側の移動しか無い（DP-4 が『キラーを移動禁止で固定』を消したため）＝
+        #     **消すだけだと c1 が丸ごと折れなくなる**（c2 は KP暗躍が既に2以上なら折れない
+        #     ＝`Threat.defendable` が False へ落ちうる。★2026-08-05 FableA の差し戻しで現物確認）。
+        #   ★★そこで**有効な折り手を足す**（Phase 2b）＝`rules/30_characters.md:65` の追随は
+        #     「同一エリアのお嬢様か大物が**移動する場合**」＝**主が動かなければ発火しない**
+        #     （`sim/effects.apply_juusha_follow` は主が実際に動いた時だけ従者の行き先を上書き）
+        #     ∴ **従者（キラー疑い）を単独で動かせば同エリアは崩れる**＝これは有効な手。
+        #     ＝B-153b が `_sk_pair_threats` で保った非対称（主を消し・従者側は残す）と同じ形。
+        #   ★足すのは **従者が同エリアの唯一のキラー疑いのとき**だけ（他にキラー疑いが残るなら
+        #     従者を動かしても同エリアは崩れない＝それこそ過大主張＝規約 §12 の狭い述語）。
+        _b165_drag = (B165_PAIR_BREAK and "従者" in near and juusha_drags(view, kp))
+        if not _b165_drag and not _cannot_move_now(view, kp):   # B-21b：動けないKPは引き離せない
             for mc in opts.move_cards_for(kp):
                 if _noop_char(view, mc, kp, roles):
                     continue    # B-31/G4/2c：空振り or 危険な退避先（致死zone/送り込み）
                 c1.breaks.append(Break(f"{kp}を{area}から移動で引き離す", mc, kp,
                                        "character", 1.3, robust=False))  # 追撃されうる
+        elif _b165_drag and set(near) == {"従者"}:
+            # ★退避先の安全＝別のKP容疑者が居るエリアへ送り込むと同じ負け筋を作り直す
+            #   （DP-4 の過大主張C と同型）。`_relocate_breaks` に view/roles も渡して
+            #   B-31/G4/2c（空振り札・危険な退避先）も従来どおり通す。
+            _bad_for_ju = frozenset(
+                a for k in kps
+                if k != kp and _alive(view, k)
+                and (a := (_char(view, k) or {}).get("area")))
+            c1.breaks.extend(_relocate_breaks(
+                opts, "従者", area,
+                "★{n}（キラー疑い）を{a}から{how}で動かす（KPを動かすと追随＝30:65）",
+                B165_JUUSHA_MOVE_COST, view=view, roles=roles,
+                avoid_areas=_bad_for_ju))
         # ★DP-4（2026-07-29）＝**過大主張A**：従来ここに『キラーを移動禁止で固定（追撃を封じる）』
         #   を条件1の折り手として置いていた（B-26 で mm札ゲートは付いた）。しかし**この条件は
         #   「キラーとKPが同エリア」＝いま既に真**であり、ピンは相手をその場に留める手＝条件を
@@ -725,8 +1000,89 @@ def _threat_kp_killer(view, roles, opts, supply_rumor,
                                       supply_rumor, rumor_left=rumor_left)
         note = "KP暗躍が既に2以上＝供給側は折れない。引き離しで防ぐ" if cur >= 2 else ""
         out.append(Threat("kp_killer", f"キラーによる{kp}殺害（{area}）", prob,
-                          True, "ターン終了フェイズ", [c1, c2], note))
+                          True, "ターン終了フェイズ", [c1, c2], note,
+                          due_day=view.get("day")))
     return out
+
+
+# ---------------------------------------------------------------------------
+# ★B-153b（2026-08-05・**本レーンの検死で見つかった過大主張**）：
+#   「A と B を**引き離す**」条件の折り手として `A を移動させる` を出すとき、
+#   **A がお嬢様/大物（＋友好4の追加対象）で B が同エリアの従者**なら、
+#   `rules/30_characters.md:65`「同一エリアのお嬢様か大物が**移動する場合、
+#   （従者は）自身への移動を無視して一緒に移動する**」により**2人は一緒に動く**
+#   ＝**引き離せない**（DP-4 が消したのと同じ「条件を偽にできない手」＝過大主張）。
+#   ★実測（`docs/監査_B153_従者と自殺_2026-08-05.md` §5-2）＝`random_FS` s4 5日級 L5D1 で
+#     `kp_sk|SKによる従者（KP）殺害（2人きり・学校）` severity **1.000** に対し
+#     p3 が `移動←→→従者`・p1 が `移動←→→お嬢様` を**同時に**打ち、
+#     従者は自身への移動を無視してお嬢様に追随＝**2人とも都市へ移動して同室のまま**
+#     ＝2枚使って引き離しに失敗した。
+#   ★これは **KB が可否を一意に決める量**（規約 §7 判例1）だが、**免除は自称しない**
+#     （裁定は FableA）。★**免除を持ち出す必要が無い**＝主人公側の**通常ゲート**を素通しした：
+#     3perm×2ベンチで**防衛数の非退行**（3日級 129=129=129／5日級 61→62・55→56・64→65）・
+#     **per-game 退行ゼロ**・flip は改善1（`random_FS` s4）のみ。
+#   ★**2026-08-05 FableA 裁定＝既定 True へ land**（B-153・バックログ §29）。
+#     3日級は `juusha_drags` の判定が **0回**＝非退行が構造的に保証。
+#     5日級は判定6回すべてで折り手を消した＝**空振り率100%の折り手6本**を落としただけ。
+#     `B153_JUUSHA_PAIR_BREAK=False` で **land 前の挙動へ bit 復帰**（ablation・変異テスト用）。
+B153_JUUSHA_PAIR_BREAK: bool = True
+
+# ---------------------------------------------------------------------------
+# ★B-165（2026-08-05・バックログ §41）＝**同型の過大主張の横断点検**の Phase 2。
+#   B-153b は `_sk_pair_threats`（2人きり族）**だけ**を直した。全 Break 生成箇所（26箇所）を
+#   走査した結果、**同型が残っているのは2箇所だけ**だった（`docs/監査_B165_*` §4）：
+#     - `_threat_kp_killer` の条件1「キラーとKPが同エリア」＝折り手は **KP側の移動のみ**
+#     - `_threat_factor_kp` の c_kill「ファクターがキラーに殺される（同エリア）」＝同上
+#   どちらも **KP/ファクターがお嬢様・大物で、同エリアのキラー疑いが従者**のとき、
+#   `rules/30_characters.md:65`（追随）により**引き離せない**＝条件を偽にできない手。
+#   ★合成 fixture で現に生成されることを確認済み（doc §4-2＝sev 0.810 の脅威で唯一の折り手）。
+#   ★★**ただし両ベンチのコーパスでは発火が 0 回**（3日級 0／5日級 0＝doc §3）＝
+#     **land しても挙動 bit は動かない**＝強さの改善ではなく**規則上の保険**。
+#     ∴ レーンは既定 **False** で提出した。
+#   ★★**2026-08-05 FableA 裁定＝既定 True へ land**（Phase 2b 後）。理由3つ：
+#     (1) **現状のコードは `rules/30:65` が偽と定める主張を既定で持っている**（KB との食い違い）。
+#     (2) **両ベンチで発火 0**（builder 呼び出し 3039／3411 回に対し**消した0本・足した0本**）
+#         ＝**挙動 bit 不変**＝退行しえない。
+#     (3) ★**Phase 2b で両肺になった**＝消すだけでなく**有効な折り手（従者を単独で動かす）を足した**
+#         ＝`Threat.defendable` が保たれる（B-148/B-160 型の「防御を丸ごと撤去する」退行が起きない）。
+#         ★**初版（削除のみ）では `defendable` が False へ落ちていた**＝FableA の差し戻しで現物確認。
+#     ★**ベンチのコーパスは薄い**（従者は `random_FS`/`random_BTX` にしか出ず、本件の組み合わせは
+#       両ベンチ合わせて実質1〜2局）＝**測れないことは「起きない」ことではない**。
+#       ユーザーの実戦はコーパス外の脚本で行われる（B-153 の唯一の改善はそこから出た）。
+#   `B165_PAIR_BREAK=False` で land 前の挙動へ **bit 復帰**（ablation・変異テスト用）。
+#   ★FableA の起票文の訂正＝「`_threat_kp_killer` の条件1 は DP-4 が相方側を既に消しているから
+#     該当しない」は**論理が逆**。相方（キラー）側を動かす折り手が**元から無い**からこそ、
+#     残った唯一の手（KP側の移動）が追随で空振りになる＝**該当する**（doc §4-1）。
+#   ★★Phase 2b（2026-08-05・**FableA の差し戻しで是正**）＝**削除だけでは片肺**だった。
+#     `_threat_kp_killer` の c1 は KP 側の移動**ただ1本**なので、それを消すと条件が丸ごと折れず、
+#     KP 暗躍が既に2以上（＝c2 も折れない）の局面で **`Threat.defendable` が False へ落ちる**
+#     （FableA が現物で確認＝「c2 が残るので defendable は True」という land 裁定は**誤り**だった）。
+#     ∴ **有効な折り手を足す**：`rules/30_characters.md:65` の追随は
+#     「同一エリアのお嬢様か大物が**移動する場合**」＝**主が動かなければ発火しない**
+#     ∴ **従者（キラー疑い）を単独で動かす**手は規則上成立する＝これを Break にする。
+#     ★足すのは**従者が同エリアの唯一のキラー疑いのとき**だけ（他にキラー疑いが残るなら
+#       従者を動かしても同エリアは崩れない＝新たな過大主張になる）。
+#     ★退避先の安全（`_relocate_breaks` の `avoid_areas` ＋ `_noop_char` の B-31/G4/2c）を通す。
+B165_PAIR_BREAK: bool = True
+#: ★従者（キラー疑い）を単独で動かす Break のコスト（KP 引き離し 1.3 が比較対象・B-153 と同値）。
+B165_JUUSHA_MOVE_COST: float = 1.3
+
+
+def juusha_drags(view: dict, name: str) -> bool:
+    """`name` を動かしても**従者は付いてくる**か（`rules/30_characters.md:65` 追随）。
+
+    True＝「`name` を動かして従者から引き離す」は**規則上成立しない**。
+    ★従者が死亡/未登場、`name` が特性対象でない、別エリア＝False（従来どおり）。
+    """
+    if name == "従者":
+        return False
+    ju = _char(view, "従者")
+    if not (ju and ju.get("alive", True) and ju.get("area")):
+        return False
+    if name not in juusha_targets_from_view(view):
+        return False
+    c = _char(view, name)
+    return bool(c and c.get("alive", True) and c.get("area") == ju.get("area"))
 
 
 def _sk_pair_threats(view, roles, opts, sks, *, kind: str,
@@ -766,10 +1122,19 @@ def _sk_pair_threats(view, roles, opts, sks, *, kind: str,
             a for a in _AREAS
             if any(_alone_with(view, vip, a, s) for s in sks if _alive(view, s)))
         # VIPを移動で逃がす（A.I.等の実質移動不可キャラは提示しない）
-        c1.breaks.extend(_relocate_breaks(opts, vip, area, "{n}を{a}から逃がす", 1.2,
-                                          view=view, roles=roles,
-                                          avoid_areas=_bad_for_vip))
+        # ★B-153b：VIP がお嬢様/大物で相方が同エリアの従者なら、VIP を動かしても
+        #   従者が追随する＝2人きりは崩れない（`rules/30:65`）＝折り手にしない。
+        if not (B153_JUUSHA_PAIR_BREAK and "従者" in sk_here
+                and juusha_drags(view, vip)):
+            c1.breaks.extend(_relocate_breaks(opts, vip, area, "{n}を{a}から逃がす", 1.2,
+                                              view=view, roles=roles,
+                                              avoid_areas=_bad_for_vip))
         for sk in sk_here:                     # SK本体を移動で剥がす
+            # ★B-153b：SK 側がお嬢様/大物で VIP が同エリアの従者なら、SK を動かしても
+            #   従者が追随する＝同じく折り手にならない（`rules/30:65`）。
+            if (B153_JUUSHA_PAIR_BREAK and vip == "従者"
+                    and juusha_drags(view, sk)):
+                continue
             _bad_for_sk = frozenset(
                 a for a in _AREAS
                 if any(_alone_with(view, sk, a, v) for v in vips if _alive(view, v)))
@@ -793,7 +1158,8 @@ def _sk_pair_threats(view, roles, opts, sks, *, kind: str,
                                        "移動禁止", other, "character", 1.1, robust=True))
         role = "KP" if vip in _suspects(roles, "キーパーソン") else "フレンド"
         out.append(Threat(kind, f"{label_word}による{vip}（{role}）殺害（2人きり・{area}）",
-                          prob, True, "ターン終了フェイズ", [c1]))
+                          prob, True, "ターン終了フェイズ", [c1],
+                          due_day=view.get("day")))
     return out
 
 
@@ -935,12 +1301,57 @@ def _threat_sk_setup(view, roles, opts, mm_chars: set) -> list[Threat]:
                 "sk_setup",
                 f"SK{sk}による{kp}の2人きり仕込み（mmが関係者{len(touched)}枚に伏せ札）",
                 prob, True, "ターン終了フェイズ", [c1],
-                note="mmの今ターン配置が脅威の関係者と一致"))
+                note="mmの今ターン配置が脅威の関係者と一致",
+                due_day=view.get("day")))
     return out
 
 
 # 事件→打点が乗る敗北ボード（暗躍禁止/移動で止まらない＝犯人冷却が唯一の折り手・B-10）。
 _INCIDENT_BOARD_DAMAGE = {"邪気の汚染": "神社"}   # 封印×邪気＝神社+2（負け筋防御ツリー §C-3）
+
+# ---------------------------------------------------------------------------
+# ★B-159（2026-08-04）：事件「行方不明」の**板への暗躍供給**を board_defeat の折り手へ。
+#   KB＝`rules/40_first_steps.md:153`／`rules/50_basic_tragedy_x.md:211-212`
+#     「犯人を任意のボードに移動させる。その後、**犯人のいるボードに暗躍カウンターを1つ置く**」
+#   ＝**板の敗北条件（ループ終了時に暗躍2以上）への直通の供給線**。
+#   ★E-2（公式裁定・`rules/40:160`）＝移動先に犯人の**禁止エリアは選べない**
+#     ＝供給先は「犯人が行けるボード」に限られる。判定は既存の単一ソース
+#     `sim.state.missing_incident_boards_from_view`（A-78 が使っているもの）を**再利用**する
+#     （二重実装しない）。
+#   ★折り手は**犯人冷却のみ**＝`rules/10_action_cards.md:65`「暗躍禁止は**行動解決フェイズ
+#     でのみ**有効」／事件はフェイズ7（`rules/00_rules_core.md`）＝**事件効果の暗躍は
+#     暗躍禁止では止まらない**（クロマク・不穏な噂と同じ理屈＝`rules/40:62,88`）。
+#   ★述語は最狭＝**その板の暗躍が既にちょうど1**の時だけ（1つ足されると2＝敗北条件成立）。
+#   既定 False＝**挙動 bit 不変**（この分岐に入らない）。
+B159_MISSING_BOARD: bool = False
+#: 行方不明の犯人冷却 Break のコスト（掃引で決める。邪気の汚染の 1.5 が比較対象）。
+B159_MISSING_COST: float = 1.5
+
+# ---------------------------------------------------------------------------
+# ★B-161（2026-08-04）：`board_defeat` の犯人冷却が**決定へ届かない**2段の門のうち、
+#   **(β)＝折り手は最安が採られる**。
+#   - `plan_defenses` は条件ごとに `Threat.cheapest_breaks`（＝`min(cost)`）を1本だけ採る
+#     （`agents/defense_plan.py:107-113,2103`）。
+#   - `agents/b100_alloc.py:230` の `here.sort(key=(cost, card, target))` も同じ順序。
+#   ∴ 冷却 cost 1.5 は**同じ条件に並ぶ**暗躍禁止 1.0（`_add_kinshi_break`）に必ず負け、
+#     冷却 Break は `plan.picks` の候補にすら入らない。
+#   ★これは**価値・重みの量**であって KB が一意に決める量ではない（規約 §7 判例1）＝
+#     rule-rational 免除の対象外＝**通常ゲート**。
+#   既定 None＝**従来値をそのまま使う＝挙動 bit 不変**（この行を通らない）。
+B161_COOL_COST: float | None = None
+
+
+def _b159_missing_feeds(view, area: str, iday, culprits) -> bool:
+    """`iday` 日の事件「行方不明」が `area` へ暗躍1を置き**うる**か（E-2 を通した到達判定）。
+
+    ★主人公は犯人を知らない＝候補集合の**和**を取る（1人でも行けるなら到達扱い＝安全側）。
+    ★候補が空／取得不能＝**絞れない**＝到達扱い（脅威を過小評価しない側）。
+    """
+    from sim.state import missing_incident_boards_from_view
+    cands = [n for n in ((culprits or {}).get(iday) or ()) if _alive(view, n)]
+    if not cands:
+        return True
+    return any(area in missing_incident_boards_from_view(view, n) for n in cands)
 
 
 def _cooling_breaks(cond: "Condition", view, opts, live_culprits, criticals,
@@ -977,14 +1388,29 @@ def _add_incident_board_cooling(c1: "Condition", view, opts, area,
     """area に事件由来の打点（邪気の汚染=神社+2 等）が乗る予定なら、その犯人候補を不安-1で
     冷やす折り手を c1 に足す（B-10）。事件打点は暗躍禁止/移動で止まらない＝犯人冷却が唯一。"""
     day_now = view.get("day", 1)
+    cur = int((view.get("board_anyaku") or {}).get(area, 0) or 0)
     for inc in view.get("incidents", []):
         nm, iday = inc.get("name"), inc.get("day")
-        if _INCIDENT_BOARD_DAMAGE.get(nm) != area or iday is None or iday < day_now:
+        if iday is None or iday < day_now:
             continue
+        if _INCIDENT_BOARD_DAMAGE.get(nm) == area:
+            label = f"{nm}の犯人候補{{c}}を不安-1で冷やし{area}への事件打点を止める"
+            cost = 1.5
+        elif (B159_MISSING_BOARD and nm == "行方不明" and cur == 1
+              and _b159_missing_feeds(view, area, iday, culprits)):
+            # ★B-159：暗躍が既に1＝行方不明の+1で2＝板の敗北条件が成立する（最狭の述語）。
+            label = (f"行方不明の犯人候補{{c}}を不安-1で冷やし"
+                     f"{area}への暗躍供給（+1で2）を止める")
+            cost = B159_MISSING_COST
+        else:
+            continue
+        if B161_COOL_COST is not None:
+            cost = B161_COOL_COST      # ★B-161(β)：既定 None＝この行を通らない
         added = _cooling_breaks(
             c1, view, opts, (culprits or {}).get(iday, set()), criticals,
-            f"{nm}の犯人候補{{c}}を不安-1で冷やし{area}への事件打点を止める", 1.5)
-        if not added and not c1.breaks and not c1.note:
+            label, cost)
+        if (nm in _INCIDENT_BOARD_DAMAGE and not added
+                and not c1.breaks and not c1.note):
             c1.note = (f"{nm}の事件打点（{area}+2）＝暗躍禁止/移動で止まらない・"
                        "犯人冷却が唯一だが今ターン折り手が手札に無い")
 
@@ -1005,12 +1431,22 @@ def _threat_board_defeat(view, roles, opts, supply_rumor,
         cur = banr.get(area, 0)
         if cur >= 2:
             # 既に敗北判定域＝突破済み。表示用に breached で残す（意思決定側は覆えない）。
+            # ★B-170（2026-08-05）＝「覆えない」には**KB上の例外**がある：巫女♡3（神社のみ・
+            #   回数無制限）／神格♡5（自ボード・回数無制限）の友好能力は、主人公能力
+            #   フェイズ(6)＝ループ終了処理(9) より前に板の暗躍を1つ剥がせる
+            #   （`rules/20_goodwill_abilities.md:129`,`:153`／`rules/00_rules_core.md:97-115`）。
+            #   ★実測では、この早期 continue が起きた条件（3日級246・5日級597・基点 df454d8）のうち
+            #   「浄化係がその板に立っていて友好も足りている」は**両ベンチとも0**、
+            #   「今日 友好+1 を1枚置けば今日剥がせる」も 3日級0・5日級10（1局1ループに集中）
+            #   ＝射程が薄いので**あえて continue のままにしてある**
+            #   （`docs/監査_B170_板の暗躍は剥がせる_2026-08-05.md` §3・§6 の再訪条件）。
             if include_breached:
                 out.append(Threat("board_defeat", f"{area}のボード敗北（突破済み・暗躍{cur}）",
                                   rule_p, True, "ループ終了フェイズ",
                                   [Condition(f"{area}の暗躍が既に{cur}（≥2）")],
                                   note="既に敗北判定域＝この板はこのループ突破済み",
-                                  breached=True))
+                                  breached=True,
+                                  due_day=view.get("days_per_loop")))
             continue
         c1 = Condition(f"{area}の暗躍が2に届く")
         # ★DP-6（2026-07-31・B-112 §9 申し送り1）：「真に止まらない供給」を**カウンタ収支**で
@@ -1064,9 +1500,15 @@ def _threat_board_defeat(view, roles, opts, supply_rumor,
                 c1.note = ("移動不可のクロマク疑いが的に張り付き＝移動でも暗躍禁止でも止まらない"
                            "供給（防御不能）")
         else:
-            # ★カルティスト無効化を考慮した暗躍禁止Break（B-8）
+            # ★カルティスト無効化を考慮した暗躍禁止Break（B-8）。
+            # ★B-184：board_defeat の「今夜打つ前提」＝最終日（発火＝ループ終了フェイズ）
+            #   or 板の暗躍≥1（imminent＝今夜1枚で不可逆化しうる夜）。この文脈でだけ
+            #   void（mm がその板に今ターン伏せていない）の暗躍禁止を生成しない
+            #   （切替口 B184_VOID_AWARE_BREAKS・既定 OFF＝bit 不変）。
             _add_kinshi_break(c1, opts, area, view, roles,
-                              f"{area}に暗躍禁止（行動解決の暗躍供給を断つ）")
+                              f"{area}に暗躍禁止（行動解決の暗躍供給を断つ）",
+                              tonight=(view.get("day") == view.get("days_per_loop")
+                                       or cur >= 1))
         # ★B-10：事件由来のボード打点（邪気の汚染=神社+2）＝暗躍禁止/移動で止まらない＝犯人冷却を足す
         _add_incident_board_cooling(c1, view, opts, area, culprits, criticals)
         # 実在度＝P(敗北ルール) × ボードの育ち具合。
@@ -1074,13 +1516,26 @@ def _threat_board_defeat(view, roles, opts, supply_rumor,
         #   効く板は cur=0 でも実効距離1（行動解決の暗躍が1つ通れば、あとは噂だけで2に届く）
         #   ＝cur>=1 と同等（B-112 の `B100_REPAIR_PROB` の本体化）。
         #   ablation（DP6_SUPPLY_LEDGER=False）では旧式（cur のみ）を bit 再現する。
+        # ★B-134（2026-08-01）：`gap` は「あと何**個**要るか」であって「あと何**枚**要るか」
+        #   ではない。`暗躍+2` は **1枚で2個**（`rules/10_action_cards.md:39`）＝
+        #   残弾が公開情報から確定できるなら **gap=2 の空の板も「1枚で届く」**＝距離1と同じ。
+        #   ＝DP-6 の「行動解決の暗躍が1つ通れば届く＝実効距離1」という枠組みを、
+        #     カウンタ個数から**カード枚数**へ揃えるだけ（新しい会計は増やさない）。
+        #   安全側（B-113/B-132 の流儀）＝**確定できる時だけ距離を詰める**：
+        #     (1) `暗躍+2` の残弾が公開情報から確定できる（`anyaku_card_reach`）
+        #     (2) **その板が敗北ボードであることが確定している**（`rule_p ≥ B134_RULEP_CERTAIN`）
+        #   どちらかが確定できなければ **reach=1＝従来どおり**（既存の較正を乱さない）。
         if DP6_SUPPLY_LEDGER:
-            progress = 0.9 if gap <= 1 else 0.35
+            reach = (anyaku_card_reach(view)
+                     if rule_p >= B134_RULEP_CERTAIN else 1)
+            progress = 0.9 if gap <= reach else 0.35
         else:
             progress = 0.9 if cur >= 1 else 0.35
         threat_p = rule_p * progress
         out.append(Threat("board_defeat", f"{area}のボード敗北", threat_p,
-                          True, "ループ終了フェイズ", [c1], race=race))
+                          True, "ループ終了フェイズ", [c1], race=race,
+                          due_day=view.get("days_per_loop"),
+                          imminent=(cur >= 1)))
     return out
 
 
@@ -1093,6 +1548,11 @@ def _threat_kp_anyaku(view, roles, opts, supply_rumor, contract_prob,
         return []
     out = []
     for kp, pkp in _suspects(roles, "キーパーソン").items():
+        # ★B-187：契約のキーパーソンは必ず少女（rules/50:42）＝非少女は候補にしない。
+        #   pkp（KP周辺確率）には契約以外のルール組の寄与が混ざるが、
+        #   P(契約 ∧ KP=非少女)=0 は KB が一意に決める（既定 OFF＝従来どおり素通し）。
+        if B187_CONTRACT_SHOUJO_ONLY and kp not in SHOUJO:
+            continue
         kc = _char(view, kp)
         if not kc or not kc.get("alive", True) or kc.get("area") is None:
             continue
@@ -1105,7 +1565,8 @@ def _threat_kp_anyaku(view, roles, opts, supply_rumor, contract_prob,
         progress = 0.9 if cur >= 1 else 0.35
         out.append(Threat("kp_anyaku", f"僕と契約＝{kp}の暗躍2でループ敗北",
                           contract_prob * pkp * progress, True,
-                          "ループ終了フェイズ", [c1]))
+                          "ループ終了フェイズ", [c1],
+                          due_day=view.get("days_per_loop")))
     return out
 
 
@@ -1138,7 +1599,8 @@ def _threat_killer_protagonist(view, roles, opts, supply_rumor,
                                   supply_rumor, rumor_left=rumor_left)
         prob = pk * (0.7 if cur >= 3 else 0.4)
         out.append(Threat("killer_protagonist", f"キラー{k}の暗躍4＝主人公死亡", prob,
-                          True, "ターン終了フェイズ", [c1]))
+                          True, "ターン終了フェイズ", [c1],
+                          due_day=view.get("day")))
     return out
 
 
@@ -1161,7 +1623,8 @@ def _threat_mainlover_protagonist(view, roles, opts, supply_rumor,
                                    "不安-1", m, "character", 1.2, robust=True))
         prob = pm * min(1.0, (unrest / 3.0)) * (1.0 if anr >= 1 else 0.4)
         out.append(Threat("mainlover_protagonist", f"メインラバーズ{m}＝主人公死亡", prob,
-                          True, "ターン終了フェイズ", [c1]))
+                          True, "ターン終了フェイズ", [c1],
+                          due_day=view.get("day")))
         # ★G6（B-11）：恋愛連鎖の予防。ラバーズ死亡→メインラバーズに不安+6（KB:50）→暗躍≥1で
         #   主人公殺害。+6は大きく冷却(-1)で追いつけない＝現在不安が低くても危険。メインラバーズが
         #   暗躍≥1（＝+6で即臨界域）かつラバーズ疑いが生存している時、予防的に脅威化する。
@@ -1191,7 +1654,8 @@ def _threat_mainlover_protagonist(view, roles, opts, supply_rumor,
             pl = max((_lov_p.get(n, 0.0) for n in lovers), default=0.0)
             out.append(Threat("mainlover_chain",
                               f"恋愛連鎖（ラバーズ死亡→メインラバーズ{m}主人公殺害）",
-                              pm * pl * 0.4, True, "ターン終了フェイズ", [c2]))
+                              pm * pl * 0.4, True, "ターン終了フェイズ", [c2],
+                              due_day=view.get("day")))
     return out
 
 
@@ -1280,8 +1744,320 @@ def _threat_incident_vip(view, roles, opts, culprits, criticals) -> list[Threat]
             _cooling_breaks(c_occ, view, opts, live_culprits, criticals,
                             "犯人候補{c}を不安-1で冷やし発生を止める", 1.4)
             out.append(Threat("incident_vip", f"{nm}による{vip}殺害（{danger_area}）",
-                              prob, True, "事件フェイズ", [c_eff, c_occ]))
+                              prob, True, "事件フェイズ", [c_eff, c_occ],
+                              due_day=iday))
     return out
+
+
+# ---------------------------------------------------------------------------
+# ★B-153 ＋ B-157 Phase 2「自殺」（2026-08-05）：**事件「自殺」の脅威判定が存在しない**。
+#
+#   KB＝`rules/40_first_steps.md:150` 自殺＝「**犯人は死亡する**」。
+#   ∴ 敗北へ届く経路は2本しかない（どちらも KB が**可否**を一意に決める構造）：
+#     (1) **犯人自身が VIP（KP/フレンド）**＝発生＝そのまま VIP 死亡＝ループ敗北。
+#     (2) ★**従者の身代わり**（`rules/30_characters.md:65` 現物カード転記 2026-07-23）＝
+#         「同一エリアのお嬢様か大物が**死亡する場合、代わりに死亡する**」＝**強制・主は生存**。
+#         ∴ 犯人がお嬢様/大物（＋友好4 `rules/20_goodwill_abilities.md:323` で追加された者）で、
+#         **従者が同エリアに生存**しているなら、死ぬのは犯人ではなく**従者**。
+#         **従者が VIP なら、犯人を殺す事件がそのまま主人公の敗北になる**。
+#   ★★折り手の非対称（**KB が可否を一意に決める**）＝同条の
+#     「同一エリアのお嬢様か大物が**移動する場合、自身への移動を無視して一緒に移動する**」
+#     ＝**主へ移動札を置いても引き剥がせない**（従者が追随する）。**動かすのは従者側**。
+#   ★暗躍禁止・移動禁止はこの経路を止めない（`rules/10_action_cards.md:65`＝暗躍禁止は
+#     行動解決フェイズのみ／事件はフェイズ7＝`rules/00_rules_core.md`）。
+#
+#   実測（`docs/監査_B153_従者と自殺_2026-08-05.md`）＝自殺の D（直結）は 3日級2／5日級4
+#   （B-157 §2 を独立に再現して完全一致）。うち**5日級3件が (2) の身代わり経路**
+#   （`random_FS` s4・L3D4/L4D4/L8D4）。**`enumerate_threats` はこの事件を一度も名指ししない**。
+#
+#   ★これは「値踏みの結果として無視している」のではなく**判定器が無い**。ただし本チケットが
+#     足すのは Threat の **prob（価値）と Break の cost（重み）**でもある＝
+#     規約 §7 判例1 の「KB が一意に決める量」だけではない ∴ **rule-rational 免除は自称しない
+#     ＝通常ゲート**（迷ったら「言えない」側に倒す）。
+#   既定 False＝**挙動 bit 不変**（`enumerate_threats` は呼ぶが即 return []）。
+B153_SUICIDE: bool = False
+#: ★従者を主から引き剥がす移動 Break のコスト（`_threat_kp_killer` の引き離し 1.3 が比較対象）。
+B153_JUUSHA_MOVE_COST: float = 1.3
+#: ★自殺の犯人候補を冷やす Break のコスト（`_threat_incident_vip` の 1.4 が比較対象）。
+B153_COOL_COST: float = 1.4
+
+
+def juusha_targets_from_view(view: dict) -> frozenset:
+    """従者の特性の対象（`rules/30_characters.md:65`）＝お嬢様/大物 ＋ 友好4の追加対象。
+
+    ★追加対象は**公開イベント**（`sim/abilities.py:488` `juusha_target_added`）＝
+      主人公も読める（カンニングではない）。効果は**そのループ中**だけ
+      （`rules/20_goodwill_abilities.md:323`／`sim/state.py:506` がループ開始で捨てる）＝
+      **同じループのイベントだけ**を拾う。
+    """
+    loop = view.get("loop")
+    added = {e.get("target") for e in (view.get("history") or ())
+             if e.get("event") == "juusha_target_added" and e.get("loop") == loop}
+    return frozenset({"お嬢様", "大物"} | {a for a in added if a})
+
+
+def _threat_incident_suicide(view, roles, opts, culprits, criticals) -> list[Threat]:
+    """★B-153/B-157：事件「自殺」（`rules/40:150`＝犯人は死亡する）による VIP 死亡。
+
+    2本の腕（上のコメント参照）。**どちらも発生条件は同じ**（犯人の不安が臨界）なので
+    発生条件の折り手（犯人冷却）は共通、効果側の折り手だけが腕ごとに違う。
+    """
+    if not B153_SUICIDE:
+        return []
+    out: list[Threat] = []
+    vips = _vip_suspects(view, roles)
+    if not vips:
+        return out
+    day_now = view.get("day", 1)
+    ju = _char(view, "従者")
+    ju_alive = bool(ju and ju.get("alive", True) and ju.get("area"))
+    ju_p = vips.get("従者", 0.0)          # 従者が VIP である確度（0なら腕2は立たない）
+    masters = juusha_targets_from_view(view)
+    for inc in view.get("incidents", []):
+        nm, iday = inc.get("name"), inc.get("day")
+        if nm != "自殺" or iday is None or iday < day_now:
+            continue
+        cset = (culprits or {}).get(iday) or set()
+        live = [c for c in cset if _alive(view, c)]
+        if cset and not live:
+            continue                      # 候補が全員死亡＝発生しない
+        # ---- 発生確率＝犯人が不安臨界に届く近さ（`_threat_incident_vip` と同じ物差し）----
+        occ = 0.12
+        for cand in live:
+            th = (criticals or {}).get(cand)
+            cc = _char(view, cand)
+            if th is None or cc is None:
+                continue
+            u = cc.get("unrest", 0)
+            if u >= th:
+                occ = max(occ, 0.9)
+            elif th <= 1:
+                occ = max(occ, 0.6)
+            elif u >= th - 1:
+                occ = max(occ, 0.45)
+        days_away = (iday or day_now) - day_now
+        if days_away >= 2:
+            occ *= 0.5
+        elif days_away == 1:
+            occ *= 0.8
+
+        # ---- 腕1＝犯人候補自身が VIP 疑い ------------------------------------
+        vip_cands = {c: vips[c] for c in live if c in vips}
+        if vip_cands:
+            best = max(vip_cands, key=lambda n: vip_cands[n])
+            # 候補が複数居るなら「その1人が真犯人である」不確かさで割り引く。
+            share = (1.0 / len(live)) if len(live) > 1 else 1.0
+            c_occ = Condition("犯人の不安が臨界に届く（発生条件）")
+            _cooling_breaks(c_occ, view, opts, live, criticals,
+                            "自殺の犯人候補{c}を不安-1で冷やし発生を止める",
+                            B153_COOL_COST)
+            out.append(Threat(
+                "incident_suicide", f"自殺による{best}死亡（犯人自身がVIP）",
+                vips[best] * occ * share, True, "事件フェイズ", [c_occ],
+                "自殺の効果＝犯人が死亡（40:150）＝効果側は折れない。犯人冷却が唯一の折り手",
+                due_day=iday))
+
+        # ---- 腕2＝★従者の身代わり（`rules/30:65`）----------------------------
+        if not (ju_alive and ju_p > 0.0):
+            continue
+        jarea = ju.get("area")
+        # 犯人候補のうち「従者と同エリアに居る特性対象（お嬢様/大物/追加対象）」
+        shielded = [c for c in live
+                    if c in masters and c != "従者"
+                    and (_char(view, c) or {}).get("area") == jarea]
+        if not shielded:
+            continue
+        share = (len(shielded) / len(live)) if live else 1.0
+        # 条件1（効果側）＝従者が犯人候補と同エリア＝**身代わりで死ぬ立ち位置**。
+        #   ★折り手は**従者側の移動だけ**（主へ置くと追随される＝同条・KB が可否を決める）。
+        #   ★退避先に別の特性対象（＝別の犯人候補）が居るエリアは選ばない（退避になっていない）。
+        c_eff = Condition(
+            f"従者が{jarea}で犯人候補{'/'.join(sorted(shielded))}と同エリア"
+            f"（身代わりで死ぬ立ち位置）")
+        _avoid = frozenset({jarea} | {(_char(view, c) or {}).get("area")
+                                      for c in live if c in masters})
+        c_eff.breaks.extend(_relocate_breaks(
+            opts, "従者", jarea,
+            "★従者を{a}から{how}で引き剥がす（主へ置くと追随＝30:65）",
+            B153_JUUSHA_MOVE_COST, view, roles, avoid_areas=_avoid))
+        c_occ2 = Condition("犯人の不安が臨界に届く（発生条件）")
+        _cooling_breaks(c_occ2, view, opts, live, criticals,
+                        "自殺の犯人候補{c}を不安-1で冷やし発生を止める",
+                        B153_COOL_COST)
+        out.append(Threat(
+            "incident_suicide_juusha",
+            f"自殺→従者の身代わりによる従者死亡（{jarea}）",
+            ju_p * occ * share, True, "事件フェイズ", [c_eff, c_occ2],
+            "従者は主の代わりに強制で死ぬ（30:65）＝主を動かしても追随する＝従者側を動かす",
+            due_day=iday))
+    return out
+
+
+#: ★B-127（B-83②・2026-08-01）：暗躍による的化への対抗の**マスタートグル**。
+#   False で `remote_murder_pin_live` が常に False を返す＝プランナーも主人公AIも旧挙動へ復帰。
+B127_ANYAKU_TARGETING: bool = True
+#: ★B-127 論点別トグル：プランナー側だけ（`_threat_remote_murder` の「暗躍0では脅威化しない」
+#   1日遅れの是正）を切る。False＝脅威化は従来どおり暗躍≥1から・主人公AIの採点だけが新挙動。
+B127_PLAN_EARLY_THREAT: bool = True
+
+
+def remote_murder_pin_live(view, name, mm_chars, day_now=None) -> bool:
+    """`name` が「**遠隔殺人の的にされつつある**」＝今日の暗躍禁止で的化を止められる状態か。
+
+    ★B-127（B-83②）＝A-67 が名指しした欠落語彙「フレンド／急所への伏せ札は、配達だけでなく
+      **的化（暗躍2）**もありうる」の二択読みの、**単一ソース**の述語。
+      プランナー（`_threat_remote_murder`）と主人公AIの採点（`heuristic_protagonist._base_score`）が
+      **同じこの関数**を見る（二重実装の禁止）。
+
+    条件（すべて公開情報だけで確定する）：
+      (1) このループの**残り日程**（事件日 ≥ 今日）に **遠隔殺人** が予定されている
+          ＝`rules/40_first_steps.md:152`／`rules/50_basic_tragedy_x.md:209`
+            「暗躍カウンターが2つ以上置かれているキャラクターがいる場合、その中から
+             任意の1人を死亡させる」＝**位置非依存**（退避では守れない）。
+      (2) `name` が生存し、**現在の暗躍が 2 未満**。
+          暗躍2以上＝既に的＝暗躍禁止では戻せない（`rules/10_action_cards.md:61`＝
+          暗躍禁止が無効化するのは「**重なった**暗躍+1/+2」だけ＝載ったカウンターは減らない）。
+      (3) mm が**今日 `name` に札を伏せている**（`view["placements"]` は公開情報＝
+          主人公は脚本家のセット位置を見てから置く＝`rules/00_rules_core.md:105-106`）。
+          ＝今日重なる暗躍+ が存在しうる＝暗躍禁止が空振りでない
+          （空振り判定の単一ソース＝`card_effect.noop_reason` G1 と同一の述語）。
+
+    ★**中身は伏せなので「その札が暗躍か」は分からない**。本述語が主張するのは
+      「**暗躍だった場合に的化が完成しうる位置に札がある**」という公開事実だけであり、
+      相手の手札の予測ではない（B-76 の「配達実証」と同じ性格の、位置に基づく読み）。
+    """
+    if not B127_ANYAKU_TARGETING:
+        return False
+    if name not in mm_chars:
+        return False
+    c = _char(view, name)
+    if not c or not c.get("alive", True):
+        return False
+    if c.get("anyaku", 0) >= REMOTE_MURDER_ANYAKU:
+        return False
+    d0 = view.get("day", 1) if day_now is None else day_now
+    return any(i.get("name") == "遠隔殺人" and i.get("day") is not None
+               and i.get("day") >= d0 for i in view.get("incidents", []) or [])
+
+
+# ---------------------------------------------------------------------------
+# ★B-201（2026-08-11・ユーザー実戦第3弾 §68-2）＝恋愛連鎖の「要衝拒否」
+# ---------------------------------------------------------------------------
+#: マスタートグル。False（既定）で `mainlover_anyaku_pin_live` が常に False を返す
+#  ＝プランナーも主人公AIも旧挙動へ bit 復帰。
+#: ★既定 ON（2026-08-11・OpusA 裁定）＝両ベンチ flip 0（bit 一致）で退行なし・単局2局で
+#  winner=mastermind → protagonist（L2 防衛）＝ユーザー実戦由来の穴の是正。
+B201_MAINLOVER_ANYAKU_PIN: bool = True
+#: メインラバーズ疑いを「要衝」とみなす実在度の下限（確信帯＝B-100 の θ と同じ 0.9）。
+B201_MAINLOVER_P: float = 0.9
+
+#: ★B-207 Phase 1 #2（2026-08-12・原因＝バックログ §69-3／Phase 0 報告 §2-1）切替口。
+#: False で条件 (4) は旧挙動（「既に暗躍2」or「**今日**的にされつつある」）へ **bit 復帰**。
+#: 機序＝教材では相手が **D1 に `暗躍+1→メインラバーズ疑い`（この時 (4) は未成立）／
+#:   D2 に `暗躍+2→ラバーズ疑い`（この時 (2)「暗躍ちょうど0」が既に壊れている）** と
+#:   2つの事象を**別の日に**置いたため、両方を同じ日に要求する連言が**恒久的に空**になった
+#:   （旧教材では 9 席 True だった同じ述語が、要衝札を **1日ずらされただけで 0 席**）。
+#: ∴ (4) を「**残り日程で暗躍2に届きうる**」（＝mm の暗躍札の残弾会計による上限評価）へ緩和する。
+B201_LOVER_REACH: bool = True
+
+
+def lover_reaches_remote_target(view, lover: str, day_now=None) -> bool:
+    """★B-207 #2＝ラバーズ疑い `lover` が「**残り日程で暗躍2に届きうる**」か。
+
+    「届きうる」の会計は**新設しない**＝既存の残弾会計（`mm_plus2_spent`＝
+    `暗躍+2` は 1/loop・`暗躍+1` は毎日再利用＝`card_supply_max` と同じ式）を、
+    **ループ末ではなく遠隔殺人の事件日まで**で切って使う：
+
+        必要数   = `REMOTE_MURDER_ANYAKU`(2) − 現在の暗躍
+        供給上限 = (事件日 − 今日 + 1) + (2 if `暗躍+2` 未消費 else 0)
+
+    - 事件日までの日数を数えるのは、`rules/00_rules_core.md` のフェイズ順が
+      〔4 行動解決 → 7 事件〕＝**事件日当日の行動解決で載った暗躍も間に合う**ため。
+    - `mm_plus2_spent` が `None`（判定材料なし）＝**未消費と仮定**＝上限を大きく見る
+      ＝「届かない」と主張しない側（B-132 と同じ安全側の倒し方）。
+
+    ★これは**上限評価**（mm がその的だけに全弾を注ぐ最良ケース）であって予測ではない。
+      狭さは呼び出し側の (1)(2)(3)（今日の伏せ札・暗躍ちょうど0・実在度≥0.9）が担う。
+    """
+    c = _char(view, lover)
+    if not c or not c.get("alive", True):
+        return False
+    need = REMOTE_MURDER_ANYAKU - int(c.get("anyaku", 0) or 0)
+    if need <= 0:
+        return True                                    # 既に合法な対象
+    d0 = int(view.get("day", 1)) if day_now is None else int(day_now)
+    plus2 = 0 if mm_plus2_spent(view) is True else 2
+    for inc in view.get("incidents", []) or []:
+        if inc.get("name") != "遠隔殺人":
+            continue
+        di = inc.get("day")
+        if di is None or int(di) < d0:
+            continue
+        if need <= (int(di) - d0 + 1) + plus2:
+            return True
+    return False
+
+
+def mainlover_anyaku_pin_live(view, name, mm_chars, roles, day_now=None) -> bool:
+    """`name`（メインラバーズ疑い）に**今日 暗躍1が載ろうとしている**か
+    ＝**今日の `暗躍禁止` だけ**がこのループの恋愛連鎖を恒久停止できる状態か。
+
+    機序（KB 突合済み・教材＝`docs/feedback_logs/鈴蘭_BTX3d_seed0_ラバーズ連鎖_2026-08-11.jsonl`）：
+      ラバーズ死亡 → メインラバーズに不安+6（`rules/50_basic_tragedy_x.md:159`）→
+      メインラバーズは**不安3以上かつ暗躍1以上**でターン終了フェイズに主人公を死亡させる
+      （`:160`）。∴ **暗躍を1つも載せなければ、ラバーズが死んでも主人公は死なない**。
+      冷却（不安-1）は +6 に追いつけない（1ループ3枚 vs +6）＝折れる条件は**暗躍側だけ**。
+
+    条件（すべて公開情報だけで確定する。役職は belief の周辺確率＝公開情報から導く）：
+      (1) mm が**今日 `name` に札を伏せている**（`view["placements"]` は公開＝主人公は
+          脚本家のセット位置を見てから置く＝`rules/00_rules_core.md:105-106`）
+          ＝今日重なる暗躍+ が存在しうる＝暗躍禁止が空振りでない
+          （空振り判定の単一ソース＝`card_effect.noop_reason` G1 と同じ述語）。
+      (2) `name` が生存し、**現在の暗躍が 0**。1以上＝**もう手遅れ**
+          （`rules/10_action_cards.md:61`＝暗躍禁止が無効化するのは「重なった暗躍+1/+2」だけ
+           ＝**既に載ったカウンターは減らない**。主人公の手札に暗躍除去は存在しない）。
+          ＝この 0→1 の一手だけが可逆／不可逆の境目＝**要衝**。
+      (3) `name` のメインラバーズ実在度が `B201_MAINLOVER_P` 以上。
+      (4) **連鎖の入口（ラバーズの死）がこのループの残り日程に立つ**：ラバーズ疑いが生存し、
+          残り日程に **遠隔殺人**（位置非依存＝退避で守れない・`rules/40_first_steps.md:152`／
+          `rules/50_basic_tragedy_x.md:209`）が予定され、そのラバーズが
+          **既に暗躍2以上（＝既に合法な対象）** か **今日 的にされつつある**
+          （`remote_murder_pin_live`＝B-127 の単一ソース）。
+
+    ★本述語が主張するのは「**暗躍だった場合に連鎖の要件が完成しうる位置に札がある**」という
+      公開事実だけであり、伏せ札の中身の予測ではない（B-127 と同じ性格）。
+    ★(4) を要求する理由＝**狭くするため**。ラバーズの死が立たないループでメインラバーズの
+      暗躍を毎日拒否すると板ガード・冷却の席を恒常的に奪う（B-189/B-195 v1 の教訓）。
+    """
+    if not B201_MAINLOVER_ANYAKU_PIN:
+        return False
+    if name not in mm_chars:
+        return False                                   # (1)
+    c = _char(view, name)
+    if not c or not c.get("alive", True):
+        return False
+    if c.get("anyaku", 0) != 0:
+        return False                                   # (2) 1以上＝手遅れ
+    if (roles or {}).get(name, {}).get("メインラバーズ", 0.0) < B201_MAINLOVER_P:
+        return False                                   # (3)
+    d0 = view.get("day", 1) if day_now is None else day_now
+    if not any(i.get("name") == "遠隔殺人" and i.get("day") is not None
+               and i.get("day") >= d0 for i in view.get("incidents", []) or []):
+        return False                                   # (4) 残り日程に遠隔殺人が無い
+    for lv in _suspects(roles, "ラバーズ"):
+        if lv == name or not _alive(view, lv):
+            continue
+        lc = _char(view, lv)
+        if lc and lc.get("anyaku", 0) >= REMOTE_MURDER_ANYAKU:
+            return True                                # 既に合法な対象
+        if remote_murder_pin_live(view, lv, mm_chars, day_now):
+            return True                                # 今日 的にされつつある
+        # ★B-207 #2＝「今日的」ではなく「**残り日程で暗躍2に届きうる**」へ緩和。
+        #   相手が要衝札を1日ずらすだけで死ぬ連言（Phase 0 §2-1）を、日をまたいだ
+        #   到達可能性で置き換える。上限評価＝`lover_reaches_remote_target`。
+        if B201_LOVER_REACH and lover_reaches_remote_target(view, lv, day_now):
+            return True
+    return False
 
 
 def _threat_remote_murder(view, roles, opts, culprits, criticals,
@@ -1326,9 +2102,18 @@ def _threat_remote_murder(view, roles, opts, culprits, criticals,
             if not vc:
                 continue
             anr = vc.get("anyaku", 0)
-            if anr < 1:
-                continue  # 暗躍0＝2まで遠い（ノイズ抑制）。1以上で警戒。
-            prog = 1.0 if anr >= 2 else 0.5   # 既に殺害圏(≥2) or あと1(=1)
+            # ★B-127（B-83②）：従来は「暗躍0＝2まで遠い」で切っていたが、mmの `暗躍+2` は
+            #   **1枚で 0→2 を作る**（`rules/40:152` の条件を1手で満たす）ため、この帯では
+            #   breakable な窓が一度も開かなかった（実測＝`random_BTX` s12 の 3日/5日は
+            #   毎ループ D-1 に `暗躍+2→フレンド` が伏せられ、翌日には既に手遅れ）。
+            #   ∴ **今日その VIP に mm の札が伏せてある日だけ**、暗躍0でも脅威化する
+            #   （判定は単一ソース `remote_murder_pin_live`）。
+            _pin_live = (B127_PLAN_EARLY_THREAT
+                         and remote_murder_pin_live(view, vip, mm_chars, day_now))
+            if anr < 1 and not _pin_live:
+                continue  # 暗躍0×mm札なし＝2まで遠い（ノイズ抑制）。
+            # 既に殺害圏(≥2) / あと1(=1) / 今日の伏せ札で 0→2 がありうる(=0×mm札)
+            prog = 1.0 if anr >= 2 else (0.5 if anr >= 1 else 0.25)
             prob = pv * occ * prog
             c_eff = Condition(f"VIP{vip}に暗躍2が載る（遠隔殺人の対象）")
             # ★B-28 Step1（G1）：暗躍禁止は「そのキャラに載った今ターンの暗躍+」しか
@@ -1352,7 +2137,8 @@ def _threat_remote_murder(view, roles, opts, culprits, criticals,
             _cooling_breaks(c_occ, view, opts, live_culprits, criticals,
                             "犯人候補{c}を不安-1で冷やし遠隔殺人を止める", 1.4)
             out.append(Threat("remote_murder_vip", f"遠隔殺人による{vip}殺害（暗躍2）",
-                              prob, True, "事件フェイズ", [c_eff, c_occ]))
+                              prob, True, "事件フェイズ", [c_eff, c_occ],
+                              due_day=iday))
     return out
 
 
@@ -1396,7 +2182,8 @@ def _threat_butterfly(view, roles, opts, culprits, criticals,
         _cooling_breaks(c_occ, view, opts, live_culprits, criticals,
                         "犯人候補{c}を不安-1で冷やし蝶の羽ばたきの発生を止める", 1.4)
         out.append(Threat("butterfly", "蝶の羽ばたき×未来改変プラン（発生で敗北へ）",
-                          prob, True, "事件フェイズ", [c_occ]))
+                          prob, True, "事件フェイズ", [c_occ],
+                          due_day=iday))
     return out
 
 
@@ -1448,7 +2235,8 @@ def _threat_hospital_protagonist_death(view, roles, opts, supply_rumor,
                                   supply_rumor, rumor_left=rumor_left)
         out.append(Threat("hospital_protagonist",
                           "病院の事件による主人公死亡（病院暗躍≥2）",
-                          prob, True, "事件フェイズ", [c_occ, c_board]))
+                          prob, True, "事件フェイズ", [c_occ, c_board],
+                          due_day=iday))
     return out
 
 
@@ -1473,7 +2261,8 @@ def _threat_tt_defeat(view, roles, opts, final_day) -> list[Threat]:
                                        card, t, "character", 1.1, robust=True))
                 break
         out.append(Threat("tt_defeat", f"TT{t}の任意敗北（最終日）", pt,
-                          True, "ループ終了フェイズ", [c1]))
+                          True, "ループ終了フェイズ", [c1],
+                          due_day=view.get("day")))
     return out
 
 
@@ -1565,6 +2354,11 @@ def enumerate_threats(view: dict, role_marginals: dict, *,
                                             culprits or {}, criticals or {}))
     except Exception:
         pass
+    try:  # ★B-153/B-157：自殺（犯人自身がVIP／従者の身代わり）＝既定 OFF で即 return []
+        threats.extend(_threat_incident_suicide(view, role_marginals, opts,
+                                                culprits or {}, criticals or {}))
+    except Exception:
+        pass
     try:  # ★遠隔殺人（暗躍2のVIP殺害）＝位置型でないので incident_vip とは別枠で検出
         threats.extend(_threat_remote_murder(view, role_marginals, opts,
                                              culprits or {}, criticals or {},
@@ -1625,6 +2419,156 @@ def _rumor_active(belief, thresh: float = 0.5) -> bool:
         if ry == "不穏な噂" or "不穏な噂" in (rxs or ()):
             p += w
     return p >= thresh
+
+
+def rumor_p(belief) -> float:
+    """★B-204：P(不穏な噂 ∈ ルール)＝**能力供給チャネルの事後確率**の取得口（単一ソース）。
+
+    `_rumor_active` が内部で計算していた合算を、閾値判定と分離して**値として**返すだけの
+    読み取り専用ヘルパ（belief 側は無改変）。取得不能は 0.0（＝チャネル無しと見なす＝
+    本チケットの述語は「発火しない」側へ倒れる＝安全側）。
+    """
+    try:
+        rm = belief.rule_marginals()
+    except Exception:
+        return 0.0
+    p = 0.0
+    for (ry, rxs), w in rm.items():
+        if ry == "不穏な噂" or "不穏な噂" in (rxs or ()):
+            p += w
+    return p
+
+
+# ---------------------------------------------------------------------------
+# ★B-204（2026-08-12・起票＝バックログ §68-6／実演＝§68-7）：
+#   板ガードの「許容量」＝**カードであと何枚まで通してよいか**。
+# ---------------------------------------------------------------------------
+#: 能力供給チャネル（不穏な噂）を「生きている」と見なす事後確率の下限。
+#: ★0.5（`_rumor_active` の既定）ではなく 0.40 を採るのは、この判定が**守りの側**
+#:   だから＝外した時の損は「板ガードを1枚打つ」（その日 mm が札を置いている板＝
+#:   等価交換は成立する）で、当てなかった時の損は**ループ敗北**（教材 §68-7 の L5）。
+#:   掃引口＝ベンチで振れる。
+B204_RUMOR_P: float = 0.40
+
+
+def board_card_allowance(view: dict, area: str, *, supply_rumor: bool,
+                         rumor_left: int | None = None,
+                         threshold: int = BOARD_DEFEAT_ANYAKU) -> int:
+    """★B-204：その板に**カードで許してよい残量**（許容量）。
+
+        許容量 = 臨界 − 現在値 − k − 1 = `unstoppable_supply_gap(...) − 1`
+
+    - `unstoppable_supply_gap` が返す gap＝「止まらない供給を使い切ってなお、臨界に届くには
+      行動解決フェイズの暗躍カードがあと何個要るか」（DP-6・単一ソース）。
+    - ∴ **許容量 = gap − 1**＝「そのうち何個までなら通してよいか」。
+      - 許容量 <= 0（gap<=1）＝**1枚も通せない**（通した瞬間、止まらない供給が最後の1つを
+        無料で供給しうる）。★教材＝§68-7 の L5＝D1 のカード1枚が素通り（都市 0→1）→
+        D3 はカードを阻止したが脚本家能力フェイズの +1 で 2 到達＝板敗北。
+      - 許容量 >= 1＝1枚通しても翌日以降にまだ守る手が残る。
+    - ★ gap<=0（＝許容量<=-1）は **B-189 の管轄**（札と無関係に届く＝暗躍禁止は空振り）。
+      本チケットの述語（`board_zero_allowance`）は **gap==1 ちょうど**に限る＝両者は
+      構造的に排他（テストで固定）。
+
+    ルール接地：暗躍禁止が消せるのは**行動解決フェイズに重なった暗躍+カード**だけ
+    （`rules/10_action_cards.md:61,65`）。不穏な噂＝【任意】脚本家能力フェイズに任意の
+    ボード1つへ暗躍+1・1/loop（`rules/40_first_steps.md:61`／`rules/50_basic_tragedy_x.md:75`）
+    ＝**阻止不能**。しかも `rules/00_rules_core.md:109`「複数可能なら自由順で各1回ずつ」
+    ＝ミスリーダー等と**同じフェイズに併用できる**。
+    """
+    cur = int((view.get("board_anyaku") or {}).get(area, 0) or 0)
+    return unstoppable_supply_gap(view, area, cur, threshold,
+                                  supply_rumor=supply_rumor,
+                                  rumor_left=rumor_left) - 1
+
+
+_ANYAKU_CARD_VALUE = {"暗躍+1": 1, "暗躍+2": 2}
+
+
+def board_card_supply_placed(view: dict, area: str) -> bool:
+    """★B-66 再設計：**過去ループに mm がその板へ暗躍カードを伏せた公開実績**があるか。
+
+    `board_card_supply_proven`（下）との違いが本チケットの核心：
+
+    | 述語 | 見る観測 | 主人公の防御に汚染されるか |
+    |---|---|---|
+    | `board_card_supply_proven` | 行動解決フェイズの `anyaku` イベント＝**乗った量** | ★される（阻止すると観測が消える） |
+    | `board_card_supply_placed`  | `cards_revealed` の**配置そのもの** | されない（伏せ札は毎ターン全枚数が公開） |
+
+    ★なぜ配置を見るのか＝結果カウンター（乗った量・ループ終了時の値）は**こちらが阻止すると
+    減る**＝「阻止したから少ない」と「そもそも狙われていない」が同じ見た目になる。
+    投資の有無を知りたいなら**投資の現物（伏せ札の公開）**を見るのが筋で、これはルール上
+    つねに公開される（`rules/00_rules_core.md:105-107`＝行動解決フェイズの頭で全カードを公開・
+    実装＝`sim/flow.py:204` の `cards_revealed`）。
+
+    ∴ `board_card_supply_proven(view, a)` ⇒ `board_card_supply_placed(view, a)`
+    （乗ったなら必ず置かれている）。逆は成り立たない＝**その差が「阻止できた分」**。
+    """
+    loop_now = view.get("loop")
+    for e in view.get("history", []) or []:
+        if e.get("event") != "cards_revealed" or e.get("loop") == loop_now:
+            continue
+        for p in e.get("placements", []) or []:
+            if (p.get("owner") == "mastermind"
+                    and p.get("target_kind") == "board"
+                    and p.get("target") == area
+                    and p.get("card") in _ANYAKU_CARD_VALUE):
+                return True
+    return False
+
+
+def board_card_supply_proven(view: dict, area: str) -> bool:
+    """★B-204：**過去ループにその板へ行動解決フェイズの暗躍（＝mm のカード供給）が
+    公開観測されている**か（`rules/10:65`＝暗躍禁止が効くのはこのフェイズだけ）。
+
+    ★なぜ要るか（§68-6 の教訓の実装）＝「**結果カウンターから防御の成否を推測しない**」。
+    B-66(2) は「敗北ループの全てでループ終了時 暗躍<2 に終わった板＝実証ゼロ＝囮の公算」
+    として板ガードを 96→74.5 に減点するが、**その板を毎日阻止していたから <2 で終わった**
+    場合も同じ見た目になる（教材2局とも真の敗北板〔都市〕がこれで降格され、
+    §68-7 の L5D1 で `暗躍禁止→医者 84.73` に席を奪われてカード1枚が素通りした）。
+    行動解決フェイズの暗躍イベント（公開）が過去ループに在る＝**mm は実際にその板へ
+    カードを投じている**＝「実証ゼロ」の前提は反証済み。
+
+    ★黒猫のループ開始時+1（`rules/30` 特性1）は行動解決フェイズのイベントではない
+    ＝この述語には**入らない**（無料 preload の板を投資実績と誤認しない）。
+    """
+    loop_now = view.get("loop")
+    for e in view.get("history", []) or []:
+        if (e.get("event") == "anyaku"
+                and e.get("phase") == "action_resolution"
+                and e.get("target") == area
+                and e.get("loop") != loop_now
+                and int(e.get("delta", 0) or 0) > 0):
+            return True
+    return False
+
+
+def board_zero_allowance(view: dict, area: str, belief, defeat_probs: dict | None,
+                         *, rumor_p_min: float | None = None) -> bool:
+    """★B-204 の狭い述語＝「この板は**カードを1枚でも通したら負ける**」と言えるか。
+
+    条件（全て公開情報＋belief。★神視点は一切見ない＝§68-11）：
+      1. 板敗北ルールがその板で**生きている**（`defeat_probs[area] > 0`）。
+      2. **能力供給チャネルが生きている**＝P(不穏な噂) >= `B204_RUMOR_P`
+         かつ このループの残弾あり（`rumor_left_for` が 0 を返さない）。
+      3. **許容量 == 0**（`board_card_allowance` == 0 ＝ gap==1）。
+         gap<=0（許容量<0）は B-189 の管轄＝除外（構造的に排他）。
+      4. **公開のカード供給実績**（`board_card_supply_proven`）＝§68-6 の教訓。
+
+    ★2 と 3 は独立ではない：k=1（噂が生きている）で gap==1 ⇔ **現在値0**。
+      ∴ 本述語が真になるのは「現在値0・噂が生きている・敗北ルールが生きている・
+      過去にカード供給の実績がある板」＝**臨界2 に対して残り1枚も余裕が無い盤**。
+    """
+    if defeat_probs is not None and float(defeat_probs.get(area, 0.0) or 0.0) <= 0.0:
+        return False
+    thresh = B204_RUMOR_P if rumor_p_min is None else rumor_p_min
+    if rumor_p(belief) < thresh:
+        return False
+    rleft = rumor_left_for(belief, view)
+    if rleft is not None and int(rleft) <= 0:
+        return False
+    if board_card_allowance(view, area, supply_rumor=True, rumor_left=rleft) != 0:
+        return False
+    return board_card_supply_proven(view, area)
 
 
 def _criticals_for(view) -> dict:

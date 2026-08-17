@@ -33,7 +33,11 @@ def _chip(text: str, color: str) -> str:
 #: ★B-100 デバッグ表示（2026-07-29・ユーザー要望）：主人公AIの札のうち
 #  「B-100 の絶対防御（制約充足）で決まったもの」の枠色（緑）。**開発モードでのみ**渡される
 #  ＝呼び出し側が prov を渡さなければ従来色のまま（bit 不変）。
-_PROV_COLOR = {"b100": "#3f9e4d"}
+#  ★B-115（2026-07-31）："b100_match"＝段G（一致席）＝B-100 の配分が通常採点の選択と
+#  独立に一致した席。上書き席（"b100"＝濃緑・実線）と一目で区別できるよう**薄緑・破線**。
+_PROV_COLOR = {"b100": "#3f9e4d", "b100_match": "#8fbf9b"}
+#: prov ごとの枠線スタイル（未登録＝実線＝従来どおり）。
+_PROV_BORDER = {"b100_match": "dashed"}
 
 
 def _card(owner: str, card: str, negated: bool = False,
@@ -41,18 +45,20 @@ def _card(owner: str, card: str, negated: bool = False,
     # 行動カードは「白地・黒字」の実カード風にして、状態チップ（不安/友好/暗躍の枠線チップ）と
     # 一目で区別できるようにする。持ち主は枠色＋先頭ラベル（脚=赤／主=青）で表す。
     # 白地×黒字はライト/ダーク両テーマで可読（board全体の枠線チップ方針の例外＝意図的）。
-    # ★prov（provenance）＝その札がどの経路で決まったか。既定 None＝従来色。
+    # ★prov（provenance）＝その札がどの経路で決まったか。既定 None＝従来色・実線。
     mm = owner == _MM
     color = "#c0504d" if mm else "#4f81bd"
+    border = "solid"
     if not mm and prov:
         color = _PROV_COLOR.get(prov, color)
+        border = _PROV_BORDER.get(prov, "solid")
     owner_label = "脚" if mm else "主"
     text = _h.escape(str(card))
     if negated:
         text = f"<s>{text}</s>"
     return (
         f'<span style="display:inline-block;background:#ffffff;color:#111;'
-        f'border:2px solid {color};border-radius:6px;padding:0 5px;margin:1px 2px;'
+        f'border:2px {border} {color};border-radius:6px;padding:0 5px;margin:1px 2px;'
         f'font-size:0.78em;white-space:nowrap;">'
         f'<span style="color:{color};font-weight:700;">{owner_label}</span> {text}</span>'
     )

@@ -270,6 +270,28 @@ def _keyperson_deaths(history: list[dict]) -> tuple[set[str], set[str]]:
     return confirmed, tt_gated, factor_possible
 
 
+def _goshinboku_signals(history: list[dict]) -> tuple[bool, bool]:
+    """★B-234：ご神木の特性の観測を (発生, 不発生) の2値で返す（公開履歴のみ）。
+
+    - **発生**＝`goshinboku_move` を**脚本家能力フェイズ**（`phase == "mastermind_ability"`）で観測。
+      ★主人公が主人公能力フェイズに任意で使った分（`phase == "goodwill_ability"`）は
+      **証拠にならない**（カード文＝主人公側は「移してもよい」＝役職と無関係）＝phase で必ず弾く。
+    - **不発生**＝`goshinboku_idle`（`sim/flow.py` が脚本家能力フェイズ末尾に発行）。
+
+    ご神木の役職はゲームを通じて不変ゆえ、健全な実装ではこの2つが同時に立つことは無い
+    （立ったら sim か演繹のどちらかが壊れている＝呼び側でバグ検出器として使う）。
+    """
+    moved = idle = False
+    for e in history:
+        ev = e.get("event")
+        if ev == "goshinboku_move":
+            if e.get("phase") == "mastermind_ability" and e.get("from") == _GOSHINBOKU:
+                moved = True
+        elif ev == "goshinboku_idle":
+            idle = True
+    return moved, idle
+
+
 def _revealed_roles(history: list[dict]) -> dict[str, str]:
     return {e["name"]: e["role"] for e in history if e.get("event") == "role_reveal"}
 
@@ -484,6 +506,34 @@ _B61_SCOPE = "elim"
 #:   ∴ 閾値の再較正では回収できない（掃引で非退行点なし）。
 _B101_SCOPE = "on"
 
+#: ★B-231（2026-08-16・ユーザー指摘＝§72-18 裁定2）の切替口＝**既定 OFF**（導入前と bit-for-bit 同一）。
+#:   妹の特性「**友好無視役職にできない**」（`rules/30_characters.md:66`・現物カード確認 2026-07-09）×
+#:   友好無視／絶対友好無視を持つ役職＝`_IGNORE_ROLES`（`engine/data.py ROLE_CLAUSE_ABILITY`＝
+#:   キラー/クロマク/カルティスト/ウィッチ/ファクター/マイナス）＝**妹はこれらに絶対に配役されない**。
+#:   脚本側は `sim/state.py:238-243` が脚本検証（ValueError）で強制済み＝真の配役はこの制約を必ず
+#:   満たす＝演繹はハードで健全（真の配役を消さない）。ON にすると、妹∈cast かつ友好無視系スロットの
+#:   ある組で、妹の役職を「友好無視を持たない役職＋パーソン」に場合分けして厳密に数える
+#:   （排反・完全＝`_combo_weight_full` の `base`）。§67-5 の「妹のフレンド/ファクター2択で公開証拠が
+#:   構造的に無い」への訂正（ファクター側は演繹で除外できる）＝FB に限らず役職推定の速度に効く。
+B231_IMOUTO_TRAIT: bool = True   # ★既定 ON（2026-08-17・ユーザー裁定「4つとも ON」・§72-28）
+
+#: ★B-234（2026-08-17）の切替口＝**既定 OFF**（導入前と bit-for-bit 同一）。
+#:   ご神木の特性（現物カード確認 2026-08-16）＝「主人公は主人公能力フェイズに上のカウンター1つを
+#:   同エリアの他キャラへ**移してもよい**。このキャラが**友好無視を持つ場合、脚本家能力フェイズに
+#:   脚本家もこの特性を用いる（強制）**」。∴ 公開情報だけで両方向の演繹が立つ：
+#:   - **発生**＝脚本家能力フェイズの `goshinboku_move` を観測 ⇒ ご神木 ∈ 友好無視系役職。
+#:     （`sim/legal.py:93` が友好無視役職のときしか脚本家に提供しない＝合法手定義と KB の両方に接地）
+#:   - **不発生**＝`goshinboku_idle`（`sim/flow.py` が脚本家能力フェイズ末尾に発行する公開イベント
+#:     ＝「カウンター>0 かつ 同エリアに生存他キャラ>0 なのに使われなかった」）⇒ ご神木 ∉ 友好無視系。
+#:     ★この向きは **B-233 の是正（強制段の実装）で初めて健全になった**（それ以前は脚本家が
+#:     任意に見送れた＝真の配役を消しうる誤演繹だった）。
+#:   実装＝発生方向は `refused`（`_combo_weight_with_refusals`）へ相乗り、不発生方向は
+#:   B-231 の妹分岐（`_combo_weight_full` の `base`）を多キャラへ一般化して相乗り。
+B234_GOSHINBOKU_TRAIT: bool = True   # ★既定 ON（2026-08-17・ユーザー裁定「4つとも ON」・§72-28）
+
+#: ご神木の名前（KB: `rules/30_characters.md`・sim/engine と同じ表記の単一ソース）
+_GOSHINBOKU = "ご神木"
+
 #: ファクターがミスリーダーの追加能力（不安+1）を得る学校の暗躍数
 #: （`sim/legal.py` 正典＝`state.board_anyaku["学校"] >= 2`・KB 50:174 / 60 A10）。
 _FACTOR_ML_ANYAKU = 2
@@ -639,6 +689,19 @@ def _mm_board_supply_candidates(e: dict, cast=()) -> set:
     return set(e.get("present") or ()) | _oomono_relax(cast)
 
 
+#: ★B-188（2026-08-07・B-187 の副産物）の切替口＝既定ON。False で **bit-for-bit 旧挙動**へ復帰。
+#:   クリーン敗北の消去法（下の `_clean_defeat_constraints`）で、僕と契約しようよ！の説明可否を
+#:   「任意のキャラの暗躍≥2」から「**少女**（engine.data.SHOUJO）の暗躍≥2」に限定する。
+#:   KB＝`rules/50_basic_tragedy_x.md:42-43`＝契約の敗北条件は**キーパーソン**の暗躍≥2で、
+#:   KPは**必ず少女**（KBが一意に決める可否＝規約 §7 判例1 の類型）。∴ 非少女にしか暗躍≥2 が
+#:   無いクリーン敗北を契約世界は説明できない＝旧挙動は contract_prob の過大残存源。
+#:   健全性＝belief の世界モデル自体が契約組で KP∈少女 を強制済み（`_combo_weight_and_marginals`＝
+#:   非少女KP固定は weight 0）・イレギュラーの枠外役職は契約組で第2のKPを作れない
+#:   （`_expand_irregular` の pool 除外）＝この消去はモデル内のどの世界も過剰に消さない。
+#:   B-187（defense_plan/attack_plan の脅威候補側＝dp.B187_CONTRACT_SHOUJO_ONLY）と同根・別経路。
+B188_CONTRACT_SHOUJO_ELIM: bool = True
+
+
 def _clean_defeat_constraints(history: list[dict]) -> tuple[list[set], bool]:
     """評価敗北（ループ終了時判定で敗北）ごとの「ありうるルールY」集合と、
     「死者なしのループ終了効果」＝タイムトラベラー必在フラグ。
@@ -709,7 +772,14 @@ def _clean_defeat_constraints(history: list[dict]) -> tuple[list[set], bool]:
             allowed.add("封印されしモノ")
         if any(v >= 2 for v in board.values()):
             allowed.update(("復讐者の灯火", "巨大時限爆弾Xの存在"))
-        if any(v >= 2 for v in loop_char_anr.get(lp, {}).values()):
+        char_anr = loop_char_anr.get(lp, {})
+        if B188_CONTRACT_SHOUJO_ELIM:
+            # ★B-188：契約の敗北＝**キーパーソン**の暗躍≥2 で、KPは必ず少女（50:42-43）
+            #   ＝少女の暗躍≥2 だけがクリーン敗北の契約説明になる（切替口の docstring 参照）
+            contract_ok = any(v >= 2 for n, v in char_anr.items() if is_shoujo(n))
+        else:
+            contract_ok = any(v >= 2 for v in char_anr.values())
+        if contract_ok:
             allowed.add("僕と契約しようよ！")
         if lp in butterfly_loops:
             allowed.add("未来改変プラン")
@@ -1279,7 +1349,7 @@ def _combo_weight_full(cast, slots, fixed, kp_shoujo, refused, rule_xs,
                        cult_sets=(), tt_sets=(), kuro_union_sets=(),
                        ml_forced=frozenset(), kp_forced=frozenset(),
                        ml_strict=None, lovers_cons=(), gw_resolved=frozenset(),
-                       _memo=None):
+                       non_ignore=(), _memo=None):
     """位置制約（present）＋ターン終了死＋拒否制約を重ねた厳密な数え上げ。
 
     ★kp_forced（B-34）＝「1死＋ループ終了効果」の死者だが、この組に**ファクター枠がある**ため
@@ -1297,8 +1367,43 @@ def _combo_weight_full(cast, slots, fixed, kp_shoujo, refused, rule_xs,
     for u in kuro_union_sets:
         k_set = set(u) if k_set is None else (k_set & u)
 
-    def base(fx):
+    def _base_cwr(fx):
         return _combo_weight_with_refusals(cast, slots, fx, kp_shoujo, refused, _memo)
+
+    # ★B-231（既定OFF）：妹の特性「友好無視役職にできない」（rules/30:66・脚本側は
+    #   sim/state.py:238-243 の検証で強制済み＝真の配役は必ず満たす＝ハードで健全）。
+    #   妹∈cast かつ友好無視系スロットのある組でだけ、妹の役職を「友好無視を持たない
+    #   役職＋パーソン」に場合分けして数える（排反・完全＝厳密。スロット超過・少女制約
+    #   等は _combo_weight_and_marginals が 0 で自然に落とす）。分岐が無い組・OFF 時は
+    #   従来の base と完全同一（bit-for-bit）。
+    # ★B-234（既定OFF・2026-08-17）：ご神木の「不発生」観測（`goshinboku_idle`）も
+    #   **同じ形の制約**＝「このキャラの役職は友好無視系ではない」。呼び側（_recompute）が
+    #   該当キャラ名を `non_ignore` で渡す＝ここは器を多キャラへ一般化しただけ。
+    #   ★妹だけ（B-231 ON・B-234 OFF）のときの列挙順は導入前と完全同一＝bit-for-bit 不変。
+    _ni_chars = [c for c in non_ignore if c in cast]
+    if B231_IMOUTO_TRAIT and "妹" in cast and "妹" not in _ni_chars:
+        _ni_chars = ["妹"] + _ni_chars
+    _ni_roles = None
+    if _ni_chars:
+        _allowed = [r for r in sorted(slots) if r not in _IGNORE_ROLES]
+        if len(_allowed) < len(slots):   # 友好無視系スロットが1つでも在る組だけ分岐
+            _ni_roles = _allowed + [DEFAULT_ROLE]   # ＋パーソン（スロット外の既定役職）
+        else:
+            _ni_chars = []               # 分岐しても恒等＝従来の base 直行
+
+    def base(fx):
+        if not _ni_chars:
+            return _base_cwr(fx)
+        return _ni_step(fx, 0)
+
+    def _ni_step(fx, i):
+        if i >= len(_ni_chars):
+            return _base_cwr(fx)
+        ch = _ni_chars[i]
+        r0 = fx.get(ch)
+        if r0 is not None:               # 上流の制約が固定済み＝整合チェックのみ
+            return (0, {}) if r0 in _IGNORE_ROLES else _ni_step(fx, i + 1)
+        return _acc([_ni_step({**fx, ch: r}, i + 1) for r in _ni_roles])
 
     # ★B-101：拒否されずに解決した友好能力の行使キャラは**絶対友好無視の役職ではない**
     #   （00:174【必ず拒否する】/ 50:98-99 判定は「能力を使うキャラ」の役職）。
@@ -1581,6 +1686,76 @@ def _combo_weight_full(cast, slots, fixed, kp_shoujo, refused, rule_xs,
     return kp_forced_step(fixed)
 
 
+#: ★B-128（2026-08-01）の切替口＝既定ON。False で **bit-for-bit 旧挙動**へ復帰する。
+#:   同一の脚本家能力フェイズに「ミスリーダーの追加能力でしか説明できない不安+1」が2件出たら、
+#:   その能力の持ち主が2人居る＝ミスリーダーは人数上限1人（KB: 50:137-139・`sim/state.ROLE_MAX`）
+#:   なので、もう1人はファクター（KB: 50:174,177）＝ファクターを追加するルールは
+#:   **不定因子χ だけ**（KB: 50:88／逆引き 50:178）＝ルールXが確定する。
+B128_COUNT_TO_FACTOR: bool = True
+
+#: KB上のML能力保持者の最大数＝ミスリーダー1（上限1人）＋ファクター1（不定因子χの1枠）。
+#: これを超える件数は KB 上あり得ない＝要求値をここでクランプする（詳細は
+#: `_ml_ability_holders_needed` の docstring と `docs/監査_B128_*` §4-2）。
+_B128_HOLDER_CAP = 2
+
+
+def _ml_ability_holders_needed(history: list[dict]) -> tuple[int, bool]:
+    """同一の脚本家能力フェイズ（loop×day で一意）の不安+1の件数から、
+    **ミスリーダーの追加能力の持ち主が最低何人必要か**を返す（B-128）。
+
+    根拠＝脚本家能力フェイズに `event="unrest", delta>0` を publish しうる主体は
+    `sim/legal.mastermind_ability_options` の完全列挙より次の2種だけ：
+      (a) `"ミスリーダー:{name}"`＝ミスリーダー、または **学校暗躍≥2 のファクター**
+          （KB: 50:137-139 / 50:174,177）。**1キャラ1ターン1回**（`used` キー）。
+      (b) `"医者:医者"`＝医者の友好能力（友好無視＋友好2・KB: 60 B-8）。**1ターン1回**。
+    ∴ 同一フェイズの件数 n から医者ぶん（多くとも1件）を引いた残りは、
+    (a) の持ち主の人数の下限になる。
+
+    健全側の3つのガード（真の配役を消さない＝可能世界0を作らない）：
+      1. 医者は `_doctor_ability_live`（B-25 と同一判定＝医者が present かつその時点の友好≥2）
+         で「使えた」ときだけ1件を差し引く。新しい例外機構は作らない。
+      2. **学校暗躍<2 のフェイズでは制約を作らない**（ファクターがML能力を持てない＝
+         KB上どの世界でも2件を説明できない＝制約を掛けると全世界が消える）。要確認として
+         anomaly を立てるに留める。
+      3. **3件以上は KB 上あり得ない**（上限2）。素直に要求すると全世界が消えるので
+         `_B128_HOLDER_CAP` にクランプする（`need>=3` の含意は `need>=2` の含意を必ず含む
+         ＝より弱い結論に落とすのは常に安全側）。同じく anomaly を立てる。
+
+    返り値: (need, anomaly)
+      need    ＝ 全フェイズを通じた必要人数の最大（0/1＝新しい情報なし＝制約なし）。
+      anomaly ＝ クランプ or 「学校暗躍<2 なのに2件以上」を実際に観測した（＝要確認）。
+    """
+    doc_live = _doctor_ability_live(history)
+    fa_live = _school_anyaku_live(history)
+    per_phase: dict[tuple, list[int]] = {}
+    for i, e in enumerate(history):
+        if (e.get("phase") != "mastermind_ability" or e.get("event") != "unrest"
+                or e.get("delta", 0) <= 0):
+            continue
+        # ★loop/day が揃うイベントだけ「同一フェイズ」に数える（旧ログ/合成イベントで
+        #   loop/day 欠落＝(None,None) に誤集約して件数が暴発するのを防ぐ＝健全側。
+        #   `anyaku_per_phase`（同型の暗躍側の実装）と同じ流儀）。
+        if e.get("loop") is None or e.get("day") is None:
+            continue
+        per_phase.setdefault((e["loop"], e["day"]), []).append(i)
+    need = 0
+    anomaly = False
+    for idxs in per_phase.values():
+        # 医者の友好能力は1ターン1回＝多くとも1件しか説明できない（B-25 と同じ判定関数）
+        doc_cap = 1 if any("医者" in set(history[i].get("present") or ()) and doc_live[i]
+                           for i in idxs) else 0
+        raw = len(idxs) - doc_cap
+        if raw < 2:
+            continue
+        if not any(fa_live[i] for i in idxs):
+            anomaly = True      # ガード2＝ファクターがML能力を持てない局面＝要確認（制約にしない）
+            continue
+        if raw > _B128_HOLDER_CAP:
+            anomaly = True      # ガード3＝KB上あり得ない件数＝要確認（クランプして使う）
+        need = max(need, min(raw, _B128_HOLDER_CAP))
+    return need, anomaly
+
+
 def _mm_phase_signals(history: list[dict]) -> dict:
     """脚本家能力フェイズの公開イベントから「供給源の存在」を読む（ルール接地の推理）。
 
@@ -1621,6 +1796,9 @@ def _mm_phase_signals(history: list[dict]) -> dict:
     # イベントが2つ出れば両ソース発火＝クロマク実在かつ不穏な噂∈rule_X（場所は問わない）。
     if any(cnt >= 2 for cnt in anyaku_per_phase.values()):
         sig["rumor_and_kuromaku"] = True
+    # ★B-128：不安側の同型（件数→供給源の人数）。上の rumor_and_kuromaku が暗躍側で
+    #   既に持っている推論を、不安側にも入れる（詳細＝_ml_ability_holders_needed）。
+    sig["ml_unrest_need"], sig["b128_anomaly"] = _ml_ability_holders_needed(history)
     return sig
 
 
@@ -1637,6 +1815,15 @@ def _combo_matches_signals(combo: dict, sig: dict) -> bool:
     if sig["rumor_and_kuromaku"] and ("クロマク" not in slots
                                       or "不穏な噂" not in combo["rule_xs"]):
         return False
+    # ★B-128：同一mm能力フェイズにML能力由来の不安が need 件＝その能力の持ち主が need 人必要。
+    #   ミスリーダーは人数上限1人（ROLE_MAX）・ファクターは不定因子χの1枠＝need=2 は実質
+    #   「ミスリーダー在 かつ ファクター在」＝**不定因子χ∈rule_X の確定**になる。
+    #   ★スロット数の和で書くのは、イレギュラー展開（_expand_irregular）で枠外役職として
+    #     ファクターが足された組も正しく拾うため（`不定因子χ ∈ rule_xs` で書くと取りこぼす）。
+    need = sig.get("ml_unrest_need", 0)
+    if B128_COUNT_TO_FACTOR and need >= 2:
+        if slots.get("ミスリーダー", 0) + slots.get("ファクター", 0) < need:
+            return False
     return True
 
 
@@ -1687,7 +1874,11 @@ def _recompute_sig(cast, set_name, history) -> str:
     h.update(repr(history).encode("utf-8"))
     # ★モジュール全体のトグル（_recompute の結果を変える）を署名に含める＝トグルを切り替えた
     #   テスト/掃引で**前のトグルの結果を引く取り違え**を塞ぐ（B-101 で追加。B-61 も同型）。
-    h.update(f"|B61={_B61_SCOPE}|B101={_B101_SCOPE}".encode("utf-8"))
+    h.update(f"|B61={_B61_SCOPE}|B101={_B101_SCOPE}"
+             f"|B128={int(B128_COUNT_TO_FACTOR)}"
+             f"|B188={int(B188_CONTRACT_SHOUJO_ELIM)}"
+             f"|B231={int(B231_IMOUTO_TRAIT)}"
+             f"|B234={int(B234_GOSHINBOKU_TRAIT)}".encode("utf-8"))
     return h.hexdigest()
 
 
@@ -1769,6 +1960,20 @@ class Belief:
         elim_y = _rule_y_eliminations(self._history)
         sig = _mm_phase_signals(self._history)
         refused = _refused_chars(self._history)
+        # ★B-234（既定OFF）：ご神木の特性の観測を両方向とも制約に落とす（`_GOSHINBOKU ∈ cast` で短絡）。
+        #   - 発生（脚本家能力フェイズの `goshinboku_move`）⇒ ご神木 ∈ 友好無視系
+        #     ＝`refused`（「このキャラの役職は友好無視系」）と**同じ意味の制約**＝器を相乗り。
+        #   - 不発生（`goshinboku_idle`）⇒ ご神木 ∉ 友好無視系 ＝ `non_ignore`（B-231 の器）へ。
+        #   ★両立は原理的に起こらない（役職はゲームを通じて不変）。万一同時に立ったら sim か
+        #     どちらかの演繹が壊れている＝**発生（実イベントの直接証拠）を優先し不発生を捨てる**
+        #     ＝可能世界を全滅させない安全側（プローブ `both_signals` が検出器として数える）。
+        non_ignore: tuple = ()
+        if B234_GOSHINBOKU_TRAIT and _GOSHINBOKU in self.cast:
+            _g_moved, _g_idle = _goshinboku_signals(self._history)
+            if _g_moved:
+                refused = set(refused) | {_GOSHINBOKU}
+            elif _g_idle:
+                non_ignore = (_GOSHINBOKU,)
         # ★B-101（既定OFF）：拒否されずに解決した友好能力＝行使キャラは絶対友好無視ではない。
         gw_resolved = (frozenset(_gw_resolved_chars(self._history))
                        if _B101_SCOPE != "off" else frozenset())
@@ -1878,7 +2083,7 @@ class Belief:
                 kuro_union_sets=kuro_unions, ml_forced=ml_forced,
                 kp_forced=_kp_forced_here, ml_strict=ml_strict,
                 lovers_cons=lovers_cons, gw_resolved=gw_resolved,
-                _memo=_cwm_memo)
+                non_ignore=non_ignore, _memo=_cwm_memo)
             if w <= 0:
                 continue
             # ★ソフト層（既定オフ＝scale は int 1＝bit-for-bit 不変）。非空時のみ per-combo の

@@ -40,16 +40,21 @@ MM_SEAT = {"mastermind"}
 MMV_BASE_LOOPS = BASE_LOOPS
 
 
-#: ★B-100（開発モード限定・2026-07-29）：AI主人公の「絶対防御」経路を有効にする実験スイッチ。
-#  既定 False＝現行AIそのまま（安定版と同一挙動）。サイドバーのトグル（開発版のみ表示）が書き換え、
-#  run_to_pending は毎回**最初から再生**するので、切り替えても対局全体が一貫した設定で再現される。
-B100_DEV_MIX = False
+#: ★B-203（2026-08-12・ユーザー実戦FB「B-100 絶対防御のトグルがオフでも緑枠表示がされる」）
+#  サイドバーのトグル（`key="mmv_b100"`・開発版のみ表示）は**表示だけの切替**＝見返し盤面に
+#  B-100 の provenance（緑枠）を描くかどうかを決める。AI主人公の設定は書き換えない
+#  （`HeuristicProtagonist.B100_MIX` が正典＝B-100 Phase 3 で既定 ON になっている）。
+#  ★旧仕様（〜2026-08-11）＝このトグルは `hp.B100_MIX = True` を代入する実験スイッチだったが、
+#   クラス既定が True になった時点で**AIに対しては無効**になり、一方で緑枠は `dev=not stable`
+#   ＝チャネルだけで決まっていた＝「OFF なのに緑枠」の正体。
+def show_b100_prov(stable: bool, toggle: bool | None) -> bool:
+    """見返し盤面に B-100 の緑枠（provenance）を描くか＝開発チャネル **かつ** トグル ON。"""
+    return (not stable) and bool(toggle)
 
 
 def _ai_protagonists(seed: int, probed: bool = False) -> dict:
+    # ★AI主人公は常に正典の既定で動かす（UI から AI の設定は触らない＝B-203）。
     hp = ProbedProtagonist(seed) if probed else HeuristicProtagonist(seed)
-    if B100_DEV_MIX:
-        hp.B100_MIX = True     # インスタンス属性＝クラス既定（False）は汚さない
     return {"p1": hp, "p2": hp, "p3": hp}
 
 
@@ -1054,7 +1059,8 @@ def render_play_vs_ai(mobile: bool = False, stable: bool = False) -> None:
 
     stable=True（安定版＝`APP_CHANNEL=stable`）では開発用の表示を出さない
     ＝`arena/play.py:render_play(stable=...)` と同じ流儀。既定 False＝開発版扱い＝安全側。
-    ★B-100 の緑枠（AI主人公の札のうち「絶対防御」で決まったもの）は開発モードのみ。
+    ★B-100 の緑枠（AI主人公の札のうち「絶対防御」で決まったもの）は
+      **開発モード かつ サイドバーのトグル ON** のときだけ（B-203＝表示だけの切替）。
     """
     import streamlit as st
 
@@ -1393,14 +1399,14 @@ def render_play_vs_ai(mobile: bool = False, stable: bool = False) -> None:
         st.toggle("🧠 主人公AIの思考表示", key="mmv_show_mind", value=False,
                   help="ONで、対局中に主人公AIの推理（内省パネル）を下部に表示します。")
         if not stable:
-            # ★B-100（開発モード限定）：主人公AIの「絶対防御」経路を有効にする実験スイッチ。
-            #   ONにすると、その経路で決まった札が『⏪解決フェイズを見返す』盤面で**緑枠**になる。
-            #   OFF（既定）＝現行AIそのまま＝安定版と同一挙動。
-            global B100_DEV_MIX
-            B100_DEV_MIX = st.toggle(
-                "🟩 B-100 絶対防御（開発用）", key="mmv_b100", value=False,
-                help="実験中の混合AI。ONの間、AI主人公は『確度の高い負け筋』を必ず1席で"
-                     "覆います。その札は見返し盤面で緑枠になります（開発版のみ）。")
+            # ★B-100（開発モード限定）：緑枠（provenance）の**表示スイッチ**＝B-203 で
+            #   「AIを切り替えるスイッチ」から「表示だけの切替」へ改めた。
+            #   AI主人公は常に正典の既定で B-100 を使う（Phase 3 で既定 ON）。
+            st.toggle(
+                "🟩 B-100 絶対防御の緑枠を表示（開発用）", key="mmv_b100", value=False,
+                help="表示だけの切替です（AIの判断は変わりません）。ONの間、AI主人公が"
+                     "『確度の高い負け筋』を覆うために選んだ札が、"
+                     "『⏪解決フェイズを見返す』盤面で緑枠になります（開発版のみ）。")
         st.divider()
         _render_load_widget()   # 📂 対局を読み込む（.rooper.json）＝別の保存局面へ切替
 
@@ -1574,17 +1580,31 @@ def render_play_vs_ai(mobile: bool = False, stable: bool = False) -> None:
                 from arena.gamelog import snapshot_to_cloud_payload, split_day_tail
                 from sim.state import GameState as _GS
                 _b, _hc, _ai = split_day_tail(_log, MM_SEAT, _key)
+                # ★U-15（2026-08-09・U-13 の同型）：game_saves は (session_id, slot) 一意
+                #   （提案書§9）＝毎回新規INSERTだと同一セッションの2度目が一意制約違反（409）
+                #   で落ちていた。既にトークンがあればその行への上書き（PATCH）で保存する
+                #   （play.py 側の U-13 修正と同じ）。slot は "manual_mm"＝solo（play.py の
+                #   "manual_solo"）とモード分離（同一セッションで両モードを手動保存すると
+                #   同一 (session_id,"manual") 行を相互上書きしていた＝FableA 裁定で分離）。
+                _prev = st.session_state.get("mmv_snap_token") or ""
                 _tok = cloud.save_snapshot(
                     snapshot_to_cloud_payload(
                         _GS.from_snapshot(_dsnaps[_key]), mode="mastermind",
                         app_version=st.session_state.get("app_version", ""),
                         human_choices=_hc, ai_replay=_ai,
                         ui={"loop": _key[0], "day": _key[1]}),
-                    slot="manual")
-                st.session_state["mmv_snap_token"] = _tok or ""
+                    slot="manual_mm", token=_prev or None)
+                if _tok:
+                    st.session_state["mmv_snap_token"] = _tok
                 cloud.log_event("cloud_snapshot_save", side="mastermind", ok=bool(_tok))
                 if not _tok:
-                    st.warning("クラウド保存に失敗しました（時間をおいて再度お試しください）。")
+                    # ★U-15：失敗しても既存トークンは消さない（古いトークンは保存済みの
+                    #   古い局面の復元に今も使える。従来は "" で潰していた）。文言も play.py と
+                    #   同文＝「時間をおいて」の誤誘導をやめ実態（通信状況）を案内する。
+                    st.warning("クラウド保存に失敗しました。通信状況をご確認のうえ、"
+                               "もう一度お試しください。")
+                elif _prev:
+                    st.info("クラウド保存を更新しました（復帰トークンは同じまま使えます）。")
             if st.session_state.get("mmv_snap_token"):
                 st.success(f"復帰トークン：`{st.session_state['mmv_snap_token']}`　"
                            "サイドバー『☁ 続きを復元』に貼るとこの局面から再開できます。")
@@ -1620,12 +1640,23 @@ def render_play_vs_ai(mobile: bool = False, stable: bool = False) -> None:
         st.markdown(f'<div style="font-size:1.4em;font-weight:700;margin:0.2em 0">'
                     f'🕐 L{_s["loop"]}・{_s["day"]}日目｜{_s["point"]}</div>',
                     unsafe_allow_html=True)
-        # A-34：ログ閲覧盤面／★B-100：dev=True（開発モード）でAI主人公の絶対防御札を緑枠に
-        _bh = board_html_from_json(mm_snapshot_json(_s), popup=True, dev=not stable)
+        # A-34：ログ閲覧盤面／★B-100：dev=True でAI主人公の絶対防御札を緑枠に
+        #   ★B-115：同じ dev 経路で段G（一致席）＝薄緑破線も出る（prov の生成はAI側の1本道）。
+        #   ★B-203：条件は「開発チャネル **かつ** サイドバーのトグル ON」＝show_b100_prov
+        #   （旧 `dev=not stable` はトグルを見ておらず「OFF なのに緑枠」を出していた）。
+        _dev_prov = show_b100_prov(stable, st.session_state.get("mmv_b100"))
+        _bh = board_html_from_json(mm_snapshot_json(_s), popup=True, dev=_dev_prov)
         if _bh:  # ★st.markdown＝Streamlitのテーマを継承（ダークで白文字）。
             st.markdown(_territory_note(sc) + _bh, unsafe_allow_html=True)
         st.caption(f"⏩ 解決したフェイズを確認中（{revealed + 1}/{n_snaps}）。"
                    "脚本家視点＝配役も主人公の伏せ札も中身が見えます。")
+        if _dev_prov and _bh:
+            # ★開発モード限定の凡例（枠色の単一ソース＝board_viz._PROV_COLOR）。
+            #   印が実際に出ている盤面でだけ表示＝凡例だけが浮くのを避ける。
+            from board_viz import _PROV_COLOR
+            if any(c in _bh for c in _PROV_COLOR.values()):
+                st.caption("🟩 濃緑・実線＝B-100 が手を上書きした席／"
+                           "薄緑・破線＝B-100 が通常採点と同じ結論に独立到達した席（一致席）")
 
         def _step(delta: int) -> None:
             st.session_state["mmv_revealed"] = max(

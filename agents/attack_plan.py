@@ -244,6 +244,11 @@ def _contract_threats(view, belief, roles, opts, supply_rumor) -> list:
         return []
     out = []
     for kp, pkp in dp._suspects(roles, "キーパーソン").items():
+        # ★B-187：契約のキーパーソンは必ず少女（rules/50:42）＝非少女は候補にしない。
+        #   切替口は dp 側の単一ソース（dp.B187_CONTRACT_SHOUJO_ONLY）を共有＝
+        #   片方だけ ON になる事故を構造で消す。既定 OFF＝従来どおり素通し。
+        if dp.B187_CONTRACT_SHOUJO_ONLY and kp not in dp.SHOUJO:
+            continue
         kc = dp._char(view, kp)
         if not kc or not kc.get("alive", True) or kc.get("area") is None:
             continue

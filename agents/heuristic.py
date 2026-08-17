@@ -32,6 +32,7 @@ v3の強化（人間の手筋の翻訳・ユーザー知見 2026-07-06）:
 from __future__ import annotations
 
 import random
+from collections import Counter
 
 from engine.board import AREAS
 from engine.data import (ROLE_CLAUSE_ABILITY, ability_kind, forbidden_of,
@@ -51,6 +52,41 @@ def _incident_nullified_by_immortal(inc_name: str, culprit_role: str) -> bool:
     ＝A-25（臨界0への霧）と同型の「透明に死んだ投資」を、不死×自殺の会計として一般化。
     """
     return inc_name == "自殺" and ROLE_CLAUSE_ABILITY.get(culprit_role) == "不死"
+
+
+# ★B-118（2026-07-31）：死亡すると mm の損になる「自陣の攻撃資産」役職（KB根拠＝監査doc §2c）。
+#   キラー（KP/主人公殺害）・シリアルキラー（2人きり殺害）・クロマク（暗躍供給）・
+#   カルティスト（暗躍禁止無視）・ミスリーダー（不安供給）・メインラバーズ（主人公殺害・50:160）。
+#   ★対象外＝KP/フレンド/ラバーズ（死亡が mm の利得）・パーソン/マイナス/ウィッチ（中立）・
+#   TT（不死＝A-38の領分）・ファクター（条件依存＝要確認・監査doc §5-1）。
+_SELF_HARM_ROLES = frozenset({"キラー", "シリアルキラー", "クロマク",
+                              "カルティスト", "ミスリーダー", "メインラバーズ"})
+
+
+# ★B-118 再設計（同日）：従者の身代わり対象（KB: rules/30_characters.md:65 特性＝
+#   「同一エリアのお嬢様か大物が死亡する場合、代わりに死亡する」〈強制・主は生存〉）。
+#   実測（5日級 random_FS s4 の検死）＝旧mmの「自殺×お嬢様(SK)」は自傷ではなく
+#   **自殺→従者が身代わり→従者(=KP)死亡＝ループ即勝ち**のコンボとして3ループ勝っていた
+#   （sim/effects.kill_character:102-107）。∴ 身代わりで犯人が死なない形はペナルティから除外。
+#   ★従者の友好能力4（対象追加・1/loop）による動的追加は view から確実に追えない＝
+#   静的な基本対象のみ（保守側＝過剰除外はしない）。要確認＝監査doc §5。
+_JUUSHA_SHIELD_TARGETS = frozenset({"お嬢様", "大物"})
+
+
+def _incident_removes_own_asset(inc_name: str, culprit_role: str) -> bool:
+    """★B-118（2026-07-31）：この事件の発生効果が**自陣の攻撃資産を退場させる**か。
+
+    自殺（40:150／50:201-202「犯人は死亡する」）＝効果が犯人自身の死亡である唯一の事件。
+    犯人の真の役職（mm視点＝既知）が攻撃資産なら、発生させることは打点マイナス＝
+    臨界に届かせる不安投資は自陣資産の処分そのもの。実測＝教材棋譜 FS5日 s4 L3D1：
+    お嬢様（SK・臨界1）へ不安+1（set_unrest_future=40で単独トップ）→L3D4自殺発生→
+    SK退場（キラー既死のため攻撃資産全損・手練れユーザー指摘の悪手）。
+    A-38（不死×自殺＝打点0）と同型の「事件効果×犯人役職」の会計＝こちらは打点負。
+    ★身代わりシールド（お嬢様/大物×従者生存）の除外判定は呼び出し元（_analyze）が行う＝
+    この述語は「役職だけで決まる部分」のみを持つ。
+    """
+    return inc_name == "自殺" and culprit_role in _SELF_HARM_ROLES
+from sim.abilities import board_anyaku_removal_scope
 from sim.reference import CHARACTER_ATTRIBUTES
 from sim.state import missing_incident_boards_from_view
 
@@ -58,6 +94,12 @@ from sim.state import missing_incident_boards_from_view
 #   差し替えて「行方不明の供給を、犯人が行けない板に数えていた席」を数える（B-105 が要求する
 #   並び順に依存しない主指標＝行為の数え上げ）。呼び出しは1 `_analyze` につき1回。
 A78_PROBE = None
+
+# ★B-124 計測フック（既定 None＝**本番経路は完全に無変更**）。`arena/b124_audit.py` が
+#   差し替えて「A-77 押し切りの門番（_ACCOUNTED_INCIDENTS）が、勝ち筋（goal_boards）に
+#   載らない事件まで『打点あり』と数えている席」を数える（A-78 監査 §2b の起票元）。
+#   呼び出しは1 `_analyze` につき1回（押し切り会計の直後）。
+B124_PROBE = None
 
 _ANRYAKU_VALUE = {"暗躍+1": 1, "暗躍+2": 2}
 
@@ -121,6 +163,37 @@ MM_PARAMS: dict[str, float] = {
     #   既定1で有効・0で旧挙動へ完全復帰＝掃引/デバッグ用の切替口。
     "breakthrough_priority": 1.0,
     "breakthrough_bonus": 30.0,
+    # ★B-193（2026-08-08・既定OFF＝class属性 B193_MM_BOARD_RUSH が門番）：
+    #   鈴蘭 seed0 実戦2局（ユーザー=脚本家の教材棋譜）の筋の移植＝「D1 本命盤 暗躍+2 プッシュ
+    #   ＋囮チャネル維持」。発火述語は _analyze_impl の b193_rush（狭い述語＝規約§12）。
+    #   ON の時だけ読まれる値＝OFF（既定）では採点経路に一切現れない（ベンチ bit 不変）。
+    "b193_rush_bonus": 30.0,   # D1 の一撃完成（+2→本命盤）を hold(25)/lovers的づくり(110) の上へ
+    "b193_decoy_d1": 105.0,    # D1 の囮盤への実弾+1＝主人公の暗躍禁止の宛先を囮へ割る伏せ札
+    "b193_rumor_decoy": 70.0,  # 最終日の噂→囮盤＝ループ終了時盤面の帰属を割る（札で防げない）
+    "b193_rumor_hold": 0.5,    # 噂→本命盤が単独で臨界に届かない日は温存（パス未満＝撃たない）
+    # ★B-214（2026-08-14・★既定ON＝class属性 B214_BOARD_DECOY が門番）：複線演出＝
+    #   **板へのダミー配置**（非暗躍札を板へ伏せる。KB `rules/10_action_cards.md:70-71`＝
+    #   脚本家は暗躍以外もボードに置けるが**解決されない**＝ルールが認めた正規の手）。
+    #   狙い＝主人公の `暗躍禁止` は**1ターン1枚**（`rules/10_action_cards.md:61`＝2枚目は
+    #   自滅）＝板ガードの宛先を無価値な板へ引き寄せ、同ターンのキャラ暗躍（本命）を通す。
+    #   ★値の意味＝この点が高いほどダミーを置く頻度が上がる（＝本命に使うべき札をダミーへ
+    #   回す縁が上側にある）。0.0＝候補には出るが採点しない＝「候補を開くだけ」の対照（§71-4）。
+    #   ★2026-08-14 に切替口が既定 ON になった＝**この値は既定で読まれる**（era 境界＝
+    #   採用根拠と限界は class 属性 B215_DECOY_FIRST のコメントに一括で書いた）。
+    #   掃引＝プラトー 60〜75／上の縁 115 以上は同一（述語が席を制限するため暴走域に届かない）。
+    "b214_decoy_board": 45.0,
+    # ★B-215（2026-08-14・★既定ON＝class属性 B215_DECOY_FIRST が門番）：**先置きダミー**。
+    #   B-214 は「板へ本命暗躍を置くターン」ではダミーを1枚も置けない（述語(B)＝板未使用が
+    #   落ちるため）。教材ではそこが**20枚（吸われ率 50%）**あり、人間はそれを
+    #   「**ダミーを先に置いてから本命の板暗躍を置く**」形で作っている（`arena.b215_probe order`）。
+    #   貪欲逐次選択では素直に書けない＝**1手先読みの席順入れ替え**で実装する（`_b215_decoy_swap`）。
+    #   ★値の意味＝「**この点未満と評価された板暗躍なら、1席あとへ回してよい**」という上限。
+    #   0.0＝一度も入れ替えない＝**候補だけ開く対照条件**（§71-4 の作法を B-215 にも適用）。
+    #   大きいほど頻度が上がる（板暗躍の帯は set_board_base=100／b193_decoy_d1=105 付近）。
+    #   ★2026-08-14 に切替口が既定 ON になった＝**この値は既定で読まれる**。
+    #   推薦点 110.0 の根拠（プラトー 105〜110／★自滅域 130 以上で通過 −30%／目減り
+    #   −1.5%・−2.2%）は class 属性 B215_DECOY_FIRST のコメントに一括で書いた。
+    "b215_decoy_first": 110.0,
     # ★A-54：暗躍+2（1/loop の切り札）を「通れば実利得になる先」以外に切るのを抑止する規律。
     #   +2は伏せられているだけで「必ず抑えさせる」拘束力を持つ（§1i 未使用+2の脅威価値）＝
     #   実利得ゼロの先へ切ると、切り札と拘束力を同時にゼロ価値で手放す（本棋譜D1＝バックアップ
@@ -246,6 +319,28 @@ MM_PARAMS: dict[str, float] = {
     "set_unrest_today": 60.0, "set_unrest_today_far": 12.0,
     "set_unrest_future": 40.0, "set_unrest_future_far": 8.0,
     "set_unrest_virus": 3.0, "set_unrest_sat": 2.0,
+    # ★B-118（2026-07-31）：自殺×自陣資産犯人（_SELF_HARM_ROLES）への不安＝発生させると
+    #   自陣の攻撃資産が退場する打点**負**の投資。filler帯（1.0）では「他が全て無価値な場面」で
+    #   置かれて実際に発火してしまう（A-25/A-38 の filler は盤面無害・こちらは有害）ため、
+    #   **負値＝0点の空手（不安禁止等）にも劣後**させる。ゲート既定1.0・0で旧挙動へ完全復帰。
+    "suicide_asset_gate": 1.0,
+    "set_unrest_self_harm": -5.0, "ab_unrest_self_harm": -5.0,
+    # ★B-122（2026-08-01）：身代わりコンボの**中止判断**。B-118 のシールド（従者生存×非資産×
+    #   犯人∈{お嬢様,大物}）は静的で、成立要件（事件日に従者と犯人が同エリア）が主人公の妨害で
+    #   崩れた後もコンボを続行していた（教材棋譜 FS5日s4 L3＝D3配達を重ね札で逸らされ・D4再配達を
+    #   移動禁止で受けられ・自殺発火→SK退場の敗着）。是正＝シールドに成立見込みの会計
+    #   `_combo_feasible` を接続：(a)会えるエリア集合が空（禁止エリアの算術）＝不可能
+    #   (b)このループで配達（mm移動札→従者）が主人公の同枠妨害（移動禁止/移動札→従者）を受けた
+    #   実績あり＝妨害供給（移動禁止は毎日戻る札＝残り全日≥配達需要）の観測済み＝実効配達供給0。
+    #   陥落した犯人は既存の self_harm 機構（reachable除外・不安+1負値・拒否解除）へ合流し、
+    #   さらに冷却（不安-1＝set_cool_self_harm）で燃料を消してコンボを中止する。
+    #   ゲート既定1.0・0で B-118 landed（静的シールド）へ bit 復帰。
+    "combo_abort_gate": 1.0,
+    # 冷却の位置づけ＝汎用の霧・future（40帯）より上（札1枚で自陣資産の退場を確実に防ぐ）・
+    # 実勝ち筋（board_base=100・killpath=92・today=60・sk_deliver=58）より下（勝ち筋は潰さない）。
+    # 配達（sk_deliver）は下げない＝灯を消した後の配達は「通れば勝ち・受けられても損なし」の
+    # 片側圧力＝続行が会計上も正。中止するのは燃料の側だけ。
+    "set_cool_self_harm": 50.0,
     # ★A-25：臨界0（黒猫）への不安+1＝公開情報上ブラフ価値ゼロ＝filler最下位（A-21の
     #   set_board_locked_over と同帯・set_move_stray=3 未満）＝意味のある手が必ず優先される。
     "set_unrest_zero_th": 1.0,
@@ -257,6 +352,38 @@ MM_PARAMS: dict[str, float] = {
     #   どちらも既定1＝有効。0で旧挙動へ復帰＝掃引/デバッグ用の切替口。
     "incident_arith_strict": 1.0,
     "incident_payoff_gate": 1.0,
+    # ★B-152（22b・2026-08-05・ユーザー実戦報告）：**最終日**に予定された事件のうち、
+    #   KBから「発生しても敗北条件を1つも動かせない」と一意に言えるものへ不安を投資しない。
+    #   A-38（不死犯人の自殺）・A-56②（利得の出ない遠隔殺人）・B-118 と**同じ場所・同じ形**。
+    #   ★最終日に限定する＝非最終日の流布（友好を剥がして能力の敷居を割る）等は打点があるので触らない。
+    #   判定は `_final_day_zero_payoff`（KB引用はそちら）。**既定 0.0＝OFF＝bit 不変**
+    #   （射程が独立脚本1本に集中したため＝docs/監査_B152_*.md §3-2。1.0 で有効化＝掃引用）。
+    "b152b_final_day_payoff": 0.0,
+    # ★B-119（2026-07-31・手練れ棋譜 FS5日s18 L2D1）：病院ゴール（A-18＝病院の事件で暗躍≥2）の
+    #   「発火が別途必要」性の会計2点。①時制＝**脚本家能力フェイズ×当日事件**では不安カードの
+    #   窓は閉店済み（行動解決は解決済・u0に反映済）＝残供給はML能力+1（同エリア）だけで
+    #   reachable を判定する。届かない犯人の病院ゴールはその場で失効し、クロマク板/噂は既存の
+    #   ab_rumor_offgoal に落ちる＝「実利ゼロの板暗躍で不穏な噂だけ確定」の情報漏出を置かない。
+    #   ②locked（勝ち確定＝抑制モード）の判定を**ループ終了時盤面条件の板**（学校[守るべき場所]/
+    #   神社[封印]/ボードX）に限定＝病院2到達は「勝ち確定」でなく「発火待ち」（事件が発生して
+    #   初めて価値）＝抑制モードに入らず発火に必要な不安pumpを続ける（rule-rational）。
+    #   既定1＝有効。0で旧挙動へ bit 復帰＝掃引/デバッグ用の切替口。監査＝docs/監査_B119_*.md。
+    "hospital_fire_gate": 1.0,
+    # ★B-140（2026-08-02）：板の暗躍除去役の判定を**KBの対象範囲**で行う切替口。
+    #   1＝`sim/abilities.ABILITY_IMPL["board_scope"]`（targets 実装と同じ行の宣言）に従う
+    #     ＝板を剥がせるのは巫女（神社のみ）と神格（自ボード）だけ。転校生は板を対象に取れない。
+    #   0＝旧挙動（能力名にエリア名が無ければ全ゴールボードの除去役＝転校生を誤算入）。
+    #   ★既定1＝KB準拠で land（監査＝docs/監査_B140_転校生の板除去役誤算入_2026-08-02.md）。
+    #   A/B は既定0で測ってから反転した：3日級は8条件（perm id/rev/h1/h2 × A/B）で
+    #   per-game 完全一致・flip 0件／5日級は防衛 −1〜−2（61→60・53→51・63→61・61→59）。
+    #   flip 全8件は射程3局（BTX s18/s7・FS s3）の中に収まり、**すべて同一機序**＝
+    #   「ゴール板が既に臨界2 かつ剥がせる役が居ない」局面で旧AIが3枚目を重ねていたのを止めた
+    #   （＝規則上の無駄手の根絶＝A-4先例と同型の rule-rational な land）。
+    #   0 で旧挙動へ bit 復帰＝変異テスト（tests/test_b140_board_removal_scope.py §4）用。
+    "board_removal_kb_scope": 1.0,
+    # ★B-120b（2026-08-01・ユーザー裁定）：同点タイでは暗躍+2（1/loopの切り札）を後回し＝
+    #   乱数で切り札を浪費しない（採点非接触・_pick のタイブレークのみ）。0で旧挙動へ bit 復帰。
+    "plus2_tie_hold": 1.0,
     # ★A-71（2026-07-27・A-56契約の再審＝**時制の統一**）：A-56②は「現在の盤面（既に暗躍≥1）」で
     #   利得を判定し、A-67は「手番の可能性（1/loop札 暗躍+2 が残っていれば的は1枚で作れる）」で
     #   判定する＝どちらも正しい会計だが、A-56②の厳格適用は**的を作る前に筋が消える循環**を生む。
@@ -402,6 +529,35 @@ MM_PARAMS: dict[str, float] = {
     #   frail_push_accounted_only=1＝A-77分岐は**勝ち筋の会計が打点を表現できている事件**
     #   （_ACCOUNTED_INCIDENTS）に限る。0＝today_gainful を通った全事件（掃引の基準点）。
     "frail_push_accounted_only": 1.0,
+    # ★B-124（2026-08-01・起票元＝A-78 監査 §2b）：`_ACCOUNTED_INCIDENTS` は事件名だけを見る
+    #   **静的集合**で、その事件のボード供給が**生きた勝ち筋（goal_boards）へ実際に届くか**を
+    #   見ていない＝ゴール板が無い局・供給先がゴール板でない局まで「打点あり」と数え、
+    #   A-77 の押し切り（不安札60／ML能力80）に資源を割いていた。
+    #   KB接地＝行方不明は「犯人を任意のボードへ移動→**犯人のいるボード**に暗躍1」
+    #     （rules/40_first_steps.md:153／rules/50_basic_tragedy_x.md:212）＋移動先に犯人の
+    #     禁止エリアは選べない（公式裁定・rules/50_basic_tragedy_x.md:213／rules/40:160-161）／
+    #     邪気の汚染は「**神社**に暗躍2」（rules/50_basic_tragedy_x.md:199）＝置き先固定／
+    #     病院の事件は「**病院**の暗躍1以上/2以上」が発動条件（rules/40:151／rules/50:205）。
+    #   ∴ これらの打点は「その板が勝ち筋の板であること」が前提＝板が無ければ打点0。
+    #   ★是正は A-78 の単一ソース（`sim.state.missing_incident_boards_from_view`）と
+    #     A-18 の病院ゴール（goal_boards への動的追加）をそのまま使う＝二重実装しない。
+    #   ★キャラ供給（不安拡大）・殺害系（遠隔殺人）は板の会計の対象外＝本項では触らない
+    #     （遠隔殺人は A-56②/A-67 の利得ゲートが `today_gainful` 側で既に効いている）。
+    #   push_goal_aligned=0 で B-124 前（A-77 landed）へ完全復帰（変異テストで固定）。
+    "push_goal_aligned": 1.0,
+    # ★B-129（2026-08-01・起票元＝トリアージ 2026-08-01 §B-129 ユーザーの疑い）：
+    #   幻想は**行動カードを被セットできず、同エリアのボードのカード効果を受ける**
+    #   （rules/30_characters.md:55。この特性を持つのは幻想ただ1人）。∴ 脚本家が幻想へ
+    #   不安を積む唯一の札は `不安+1 → 幻想のいるボード`（target_kind=="board"）。
+    #   ところが不安+1 の採点（_score_set）は `kind == "character"` でしか点を付けず、
+    #   この札は末尾の 0 点に落ちていた＝**帳簿（_analyze の mm_rate×残ターン）は札の
+    #   1/ターンを幻想にも数えているのに、その札を選ぶ手が候補に無い**という不整合。
+    #   実測（監査doc B-129 §3）＝ミスリーダーが幻想と別エリア/不在の配役では、
+    #   幻想が犯人の事件が seed 0〜5 の 6/6 で不発（板へ1枚置けば届いた局を含む）。
+    #   是正＝狭い述語（対象板に生存中の幻想が居る ∧ 幻想が今まさに積むべき犯人）を
+    #   満たす時だけ「幻想へのキャラ置き」と同じ採点へ委譲する（二重実装を作らない）。
+    #   gensou_board_unrest=0 で B-129 前へ bit 復帰（変異テストで固定）。
+    "gensou_board_unrest": 1.0,
     "set_unrest_push": 60.0, "ab_unrest_push": 80.0,
     "set_noise_base": 18.0, "set_noise_reach": 8.0, "set_noise_low": 4.0,
     "set_noise_immobile": 12.0,  # 移動不可キャラへの伏せ札は「ほぼ不安」と読まれる＝減点（テスター知見）
@@ -552,9 +708,83 @@ def _perp_block_card(area: str, board: str) -> str | None:
 
 
 class HeuristicMastermind:
+    # ★B-193（2026-08-08・バックログ§63-3残件・§65）：「D1 本命盤 暗躍+2 プッシュ×囮チャネル維持」
+    #   ＝鈴蘭 seed0 実戦2局でユーザー（脚本家）が示した筋の移植。★既定 False（OFF で両ベンチ
+    #   bit 不変が絶対条件＝脚本家AIを既定で強くする＝era 再基準化はユーザー裁定事項）。
+    #   ON の挙動＝(1) D1 にルールY敗北盤へ暗躍+2 の一撃完成（M1b の完成保留 hold を経ない＝
+    #   囮盤は札ゼロチャネルで勝手に育つため保留が不要）(2) D1 に囮盤へ実弾+1 を伏せて主人公の
+    #   暗躍禁止の宛先を割る (3) 最終日の不穏な噂→囮盤で帰属を割る画像を維持。
+    #   発火述語（狭い述語）＝ _analyze_impl の b193_rush を参照。
+    #: ★既定 ON（2026-08-09・ユーザー承認「既定onok」＝★測定 era 再基準化）：
+    #  対照実測＝3日級 127→129 防衛・平均 2.754／5日級 64・平均 3.429（トレード込みで採用）。
+    B193_MM_BOARD_RUSH = True
+
+    # ★B-214（2026-08-14）：**複線演出＝板へのダミー配置**の切替口。
+    #   OFF＝`wants_bluff_options` が False → `sim/flow` が `allow_bluff=False` のまま
+    #   候補を作る＝**options 列が1手も変わらない**（`_pick` は option 1つにつき rng を
+    #   1回消費するので、候補が増えると乱数列がずれる＝OFF での bit 不変にはこれが必須）。
+    #   ON＝板へ非暗躍札（解決されない＝KB `rules/10:70-71`）を伏せる手が候補に入り、
+    #   `_score_set` (6) が採点する。
+    #: ★★既定 ON（2026-08-14・ユーザー裁定「再基準化していいよ」／OpusA 依頼）。
+    #  B-215（下）と**対で** ON にする。採用根拠・限界は B215_DECOY_FIRST 側に一括で書いた。
+    B214_BOARD_DECOY = True
+
+    # ★B-215（2026-08-14）：**先置きダミー**の切替口。
+    #   ★B-214 の切替口とは**独立**＝片方だけ ON でも成立する（規約§3-6「他フラグの既定値に
+    #   暗黙依存しない」）。両方 OFF の時だけ `wants_bluff_options` が False＝候補列が
+    #   1手も増えない＝bit 不変（＝OFF 契約の土台。テストは両フラグを**明示**して測る）。
+    #   何をするか＝`_b215_decoy_swap`＝**1手先読みの席順入れ替え**。今ターンの最善手が
+    #   「板への暗躍札（本命）」で、まだ板を使っておらず、残席が2以上なら、
+    #   **先にダミーを別の板へ置き、本命は次の席へ回す**。
+    #   なぜ必要か＝B-214 の述語(B)（板未使用）は**置いた順**で評価されるので、本命の板暗躍が
+    #   先に入るとその後ダミーを置けない＝教材の「板に本命暗躍があるターンのダミー20枚」を
+    #   1枚も再現できなかった（`docs/仮_b214_log/報告_B214.md` §5.5）。
+    #
+    # ★★既定 ON（2026-08-14・ユーザー裁定「再基準化していいよ」／OpusA 依頼で B-214 と対で ON）。
+    #   ここは **B-214 と B-215 をまとめた採用根拠**（詳細＝`docs/仮_b215_log/報告_B215.md`）：
+    #
+    #   ①**採用根拠＝「物差しの作り直し」であって「脚本家が強くなったから」ではない**。
+    #     主人公の板ガード命中率が **3日級 99.3%→78.5%／5日級 99.5%→81.6%** に落ちる＝
+    #     飽和していた主人公側ベンチ（3日級 130/130）に**新しい信号**が入る。
+    #     複線ターン（囮板と本命の板暗躍が同ターンに両立）は **3日級 1→187／5日級 2→236**。
+    #   ②★**強さの直接証拠は無い**。通過した暗躍/ターンは 3条件で 0.344/0.350/0.345（3日級）・
+    #     0.314/0.313/0.312（5日級）＝**不動**。`暗躍+2`（1/loop の切り札）の被ブロック率も
+    #     守られない＝3日級 62.8%→62.2%→**65.3%**／5日級 66.5%→66.3%→**69.9%**（むしろ悪化）。
+    #   ③**機序＝交換比 1:1 が構造的上限**。主人公の `暗躍禁止` は1ターンに実効1枚
+    #     （`rules/10_action_cards.md:61`＝複数の主人公が出すと暗躍禁止自体が無効化）＝
+    #     ダミーが救えるのは最大 1枚/ターン。一方ダミーは脚本家の3席のうち**必ず1席**を食う＝
+    #     失うのも 1枚/ターン。∴ **正味は最大でも ±0**＝複線演出はスループットを増やさない。
+    #     （置き順そのものは相手に観測されない＝`sim/views.py:41-49` はカード名を伏せ、
+    #      主人公AIの `placements` 参照は全て set/any＝順序を読まない。両ベンチ200局を
+    #      「3枚を逆順」で回して per-game bit 一致を実測済み。）
+    #   ④**掃引**（`b215_decoy_first`）＝下の縁 0 は B-214 単独と bit 一致（＝対照）／
+    #     **プラトー 60〜80・105〜110・200〜400**（各々 per-game まで完全一致）／
+    #     ★**自滅域は 130 以上**＝5日級で通過/ターンが 0.313→0.219（**−30%**）まで落ち、
+    #     主人公の防衛が 66→68・平均 3.386→2.857 に改善してしまう。
+    #     ∴ 推薦点はプラトー内側の **110.0**（95 は遷移点でプラトーではない）。
+    #   ⑤**目減り**＝推薦点で脚本家が暗躍を置く枚数は 3日級 0.925→0.911/ターン（**−1.5%**）・
+    #     5日級 0.819→0.801/ターン（**−2.2%**）。自滅域 200 では −3.2%／−9.2% まで拡大する。
+    #   ★★**この ON 化は測定 era の境界を引く**＝以後のベンチ数値は
+    #     era 境界より前の正典値と**直接比較できない**（過去2回の境界＝2026-07-27 A-73／
+    #     2026-08-09 B-193 と同じ扱い）。新しい正典値は OpusA のフルゲート結果で張り直す。
+    B215_DECOY_FIRST = True
+
+    #: ダミーに使う札の**決定的**な優先順（乱数を使わない＝局面から一意）。
+    #  根拠＝教材 39 枚中 37 枚が `不安+1`（`arena/b214_probe logs`）。移動札は KP寄せ・
+    #  死亡盤封鎖・カルティスト搬送の実手に使うので最後に回す。
+    _B214_CARD_PREF = ("不安+1", "不安-1", "不安禁止", "友好禁止",
+                       "移動禁止", "移動斜め", "移動←→", "移動↑↓")
+
+    @property
+    def wants_bluff_options(self) -> bool:
+        """`sim/flow` への申告＝脚本家の set_card 候補に allow_bluff を開いてほしいか。"""
+        return bool(self.B214_BOARD_DECOY or self.B215_DECOY_FIRST)
+
     def __init__(self, seed: int = 0, params: dict[str, float] | None = None):
         """params: MM_PARAMS の部分上書き（チューニング用）。未指定＝従来と同一挙動。"""
         self.rng = random.Random(seed)
+        # ★B-215：席順入れ替えの発火計数（**計測専用**＝決定には一切参加しない）。
+        self._b215_stats: Counter = Counter()
         self.p = dict(MM_PARAMS)
         if params:
             unknown = set(params) - set(MM_PARAMS)
@@ -653,6 +883,9 @@ class HeuristicMastermind:
             goal_boards.add("神社")
         elif ry in ("復讐者の灯火", "巨大時限爆弾Xの存在") and view.get("rule_y_board_x"):
             goal_boards.add(view["rule_y_board_x"])  # FS/BTX：ボードX（クロマク/ウィッチ初期）≥2
+        # ★B-119：ループ終了時盤面条件の板（＝暗躍2に到達すれば置くだけで守り切れる板）。
+        #   A-18 で後から加わる病院（事件日発火型＝発生して初めて価値）と区別して locked 判定に使う。
+        ry_goal_boards = set(goal_boards)
         # ★A-18：病院ゴールボード（病院の事件で病院暗躍≥2＝主人公殺害）は reachable_culprits の
         #   算出後に、事件日ゲート＋打点会計つきで追加する（下・従来はここで無条件に恒常ゴール化し、
         #   届かない/事件日が過ぎた病院に毎ループD3暗躍を無駄置きしていた）。
@@ -687,6 +920,71 @@ class HeuristicMastermind:
         #   届く事件（reachable）にだけ資金を出し、届かないものは霧まき等へ資金を回す。
         #   pump_targets＝届く犯人を事件日の近い順に（ミスリーダーの寄せ先・不安の照準に使う）。
         mm_rate = 2 if misleader else 1
+        # ★B-118：自殺×自陣資産犯人（発生＝自陣の攻撃資産の退場＝打点負）。打点会計から除外し、
+        #   カード/能力側の採点でも負値へ落とす（A-38 と同型の除外＋明示ブランチの二段構え）。
+        self_harm_culprits: set[str] = set()
+        if self.p["suicide_asset_gate"]:
+            # ★身代わりシールド（B-118再設計・KB: 30:65）：犯人がお嬢様/大物で従者が生存中なら、
+            #   自殺は犯人でなく（同エリア時）従者を殺す＝犯人資産は死なない。従者=KP/フレンドなら
+            #   むしろ勝ち手（s4実測＝自殺→身代わり→KP死亡でループ勝ち×3）。従者自身が攻撃資産
+            #   （クロマク等）の時だけは身代わり＝自陣資産の退場なのでシールド不成立。
+            _ju = chars.get("従者")
+            _ju_shield = bool(_ju and _ju.get("alive")
+                              and roles.get("従者", "パーソン") not in _SELF_HARM_ROLES)
+
+            def _combo_feasible(cn: str) -> bool:
+                """★B-122（2026-08-01）：身代わりコンボの成立見込みの会計（詳細＝監査doc §2a）。
+
+                シールドの成立要件＝事件日に従者と犯人（お嬢様/大物）が同エリア。教材棋譜
+                （FS5日s4 L3）＝D3 の配達（mm 移動←→→従者）を主人公の重ね札（移動↑↓→従者）で
+                逸らされた後も静的シールドが成立し続け、D4 の再配達を移動禁止で受けられて
+                自殺発火→SK退場（敗着）。会計＝
+                (a) 会えるエリア集合（双方の現在地∪非禁止エリアの積）が空＝算術上不可能。
+                (b) このループで「mm の移動札→従者」×「主人公の移動禁止 or 移動札→従者」の
+                    同日実績が1日でもある＝妨害供給の観測。移動禁止は 1/loop 札ではない
+                    （毎日手札に戻る）＝妨害供給は残り全日 ≥ 配達需要（1回/日）＝
+                    実効配達供給 0 と会計する（魔法数でなく妨害資源の再生可能性の会計）。
+                一次情報＝view["history"] の cards_revealed（両陣営の全配置が毎日公開記録
+                される＝00:106・sim/flow.py）。gate=0 で B-118 landed（静的シールド）へ bit 復帰。
+                """
+                if not self.p["combo_abort_gate"]:
+                    return True
+                cc0 = chars.get(cn)
+                _ja = _ju.get("area") if _ju else None
+                _ca = cc0.get("area") if cc0 else None
+                if not (_ja and _ca):
+                    return True         # 盤面未確定（loop_start等）＝保守側（旧挙動）
+                if _ja == _ca:
+                    return True         # 既に同エリア＝従者追随（30:65）で粘着＝見込みあり
+                _meet = (({_ja} | (set(AREAS) - forbidden_of("従者")))
+                         & ({_ca} | (set(AREAS) - forbidden_of(cn))))
+                if not _meet:
+                    return False        # (a) 会えるエリアが無い＝会計上不可能
+                for _e in view.get("history", ()) or ():
+                    if (_e.get("loop") != view.get("loop")
+                            or _e.get("event") != "cards_revealed"):
+                        continue
+                    _ps = _e.get("placements", ()) or ()
+                    if (any(p.get("owner") == "mastermind"
+                            and p.get("target") == "従者"
+                            and p.get("target_kind") == "character"
+                            and p.get("card") in MOVE_CARDS for p in _ps)
+                            and any(p.get("owner") != "mastermind"
+                                    and p.get("target") == "従者"
+                                    and p.get("target_kind") == "character"
+                                    and (p.get("card") == "移動禁止"
+                                         or p.get("card") in MOVE_CARDS)
+                                    for p in _ps)):
+                        return False    # (b) 配達が受けられた実績＝実効配達供給0
+                return True
+
+            self_harm_culprits = {
+                inc["culprit"] for inc in view["incidents"]
+                if inc["day"] >= day
+                and _incident_removes_own_asset(
+                    inc["name"], roles.get(inc["culprit"], ""))
+                and not (_ju_shield and inc["culprit"] in _JUUSHA_SHIELD_TARGETS
+                         and _combo_feasible(inc["culprit"]))}
         reachable_culprits: set[str] = set()
         pump_targets: list[tuple[int, str]] = []
         # ★A-74：犯人ごとの「不安の実効供給」（事件日までに脚本家が積める上限）。
@@ -702,6 +1000,17 @@ class HeuristicMastermind:
             #   打点0＝この犯人に不安を積む動機が無い＝reachable に入れない（打点会計から除外）。
             #   ＝mmが「発火しても何も起きない＋不死露呈する」事件のために不安を投資するのを止める。
             if _incident_nullified_by_immortal(inc["name"], roles.get(cn, "")):
+                continue
+            # ★B-118：自殺×自陣資産犯人＝発生させると自陣の攻撃資産が退場（打点負）＝
+            #   reachable/pump/push（today_gainful）に載せない（A-38 の除外と同型）。
+            if cn in self_harm_culprits:
+                continue
+            # ★B-152（22b）：**最終日**に予定された事件のうち、KBから「発生しても敗北条件を
+            #   1つも動かせない」と一意に言えるものへは不安を注がない（A-38/B-118 と同型）。
+            #   判定＝`_final_day_zero_payoff`（KB引用はそちら）。既定OFF（掃引の切替口）。
+            if (self.p["b152b_final_day_payoff"]
+                    and cd >= view.get("days_per_loop", cd)
+                    and self._final_day_zero_payoff(inc["name"], cn, view, roles)):
                 continue
             # ★A-56②：**発生しても利得が出ない事件**には不安を注がない（A-38「不死で無効」と同型）。
             #   遠隔殺人＝「暗躍が2つ以上のキャラの中から任意の1人を死亡させる」（40:152/50:209）＝
@@ -766,6 +1075,18 @@ class HeuristicMastermind:
                 if not (mlc and mlc.get("alive") and cc.get("area")
                         and mlc.get("area") == cc["area"]):
                     rate = 1
+            # ★B-119①：脚本家能力フェイズ×当日事件＝不安カードの窓は閉店済み（行動解決は
+            #   解決済・カード分は u0 に反映済）。この時点で積める残供給はML能力の+1
+            #   （ML生存・犯人と同エリア）だけ＝それ以外は0。s18 L2D1 実測＝学者(臨界2・u0=0)が
+            #   rate=2 の帳簿で reachable を維持し、発火不能の病院に板暗躍2発（クロマク＋噂）を
+            #   置いて不穏な噂だけ確定した。★健全側＝u0=1・ML同席なら 1+1≥2 で reachable の
+            #   まま（ML押し込み→板2→主人公死亡の本物のコンボは満額維持）。
+            #   ★既知の限界（過大側＝健全）＝ML能力を同フェイズ内で既に消費済みかは見ない。
+            if (turns == 1 and self.p["hospital_fire_gate"]
+                    and view.get("phase") == "mastermind_ability"):
+                mlc = chars.get(misleader) if misleader else None
+                rate = 1 if (mlc and mlc.get("alive") and cc.get("area")
+                             and mlc.get("area") == cc["area"]) else 0
             unrest_supply[cn] = max(unrest_supply.get(cn, 0.0), float(rate * turns))
             if cc["unrest"] < th and cc["unrest"] + rate * turns >= th:
                 reachable_culprits.add(cn)
@@ -846,7 +1167,36 @@ class HeuristicMastermind:
             return sum(1 for _u, _nm in _cool_abils
                        if ability_class_target_alive(_u, _nm, (target,)))
 
+        def _incident_board_damage_lands(name: str, culprit: str) -> bool:
+            """★B-124：今日の事件の**ボード供給**が、生きた勝ち筋の板に実際に届くか。
+
+            `_ACCOUNTED_INCIDENTS`（A-77 の門番）は事件名だけを見る静的集合で、板の打点が
+            **勝ち筋（`goal_boards`）に載るか**を見ていない。KB上、板へ暗躍を置く事件の
+            打点は「その板が勝ち筋の板であること」が前提：
+              - 行方不明＝犯人を任意のボードへ移動→**犯人のいるボード**に暗躍1
+                （rules/40_first_steps.md:153／rules/50_basic_tragedy_x.md:212）。
+                移動先に犯人の禁止エリアは選べない（公式裁定＝rules/50:213／rules/40:160-161）
+                ＝**犯人が行ける板にしか供給できない**（判定は A-78 の単一ソース
+                `sim.state.missing_incident_boards_from_view`）。
+              - 邪気の汚染＝**神社**に暗躍2（rules/50_basic_tragedy_x.md:199）＝置き先固定。
+              - 病院の事件＝**病院**の暗躍1以上/2以上が発動条件
+                （rules/40_first_steps.md:151／rules/50_basic_tragedy_x.md:205）。
+                病院がゴール板かは A-18 が `goal_boards` に動的に載せる（事件日ゲート＋打点会計）。
+            キャラ供給（不安拡大＝rules/40:149）・殺害系（遠隔殺人＝rules/40:152）は板の会計の
+            対象外＝True を返して従来どおり（狭い述語：規約 §12）。
+            """
+            if name == "行方不明":
+                return bool(goal_boards and (
+                    missing_incident_boards_from_view(view, culprit) & goal_boards))
+            if name == "邪気の汚染":
+                return "神社" in goal_boards
+            if name == "病院の事件":
+                return "病院" in goal_boards
+            return True
+
         push_culprit = None
+        _a77_fired = False        # ★B-124 計測用（A-77 分岐が押し切りを立てたか）
+        _b124_info = None         # ★B-124 計測用（B124_PROBE が None なら常に None）
         _push_scope_ok = True
         if self.p["push_rule_y_decisive_only"]:
             # ★既定＝発生自体がルールY敗北（未来改変プラン×蝶の羽ばたき）の日だけ押す。
@@ -879,7 +1229,11 @@ class HeuristicMastermind:
                 elif (self.p["frail_supply_push"] and not _wipe and _ml_ok
                         and misleader != today_culprit
                         and (not self.p["frail_push_accounted_only"]
-                             or today_incident in _ACCOUNTED_INCIDENTS)):
+                             or (today_incident in _ACCOUNTED_INCIDENTS
+                                 # ★B-124：静的集合に加えて「板の打点が勝ち筋に載るか」を見る。
+                                 and (not self.p["push_goal_aligned"]
+                                      or _incident_board_damage_lands(
+                                          today_incident, today_culprit))))):
                     _room = [_n2 for _n2, _c2 in chars.items()
                              if _c2.get("alive") and _n2 != today_culprit
                              and _c2.get("area") and _c2.get("area") == _pc.get("area")]
@@ -887,6 +1241,27 @@ class HeuristicMastermind:
                         _nc = _cool_reaching(today_culprit)
                         if _u0 - _nc >= _pth and _u0 - 1 - _nc < _pth:
                             push_culprit = today_culprit
+                            _a77_fired = True
+                if B124_PROBE is not None:
+                    # ★B-124 計測（既定 None＝本番経路は無変更）。会計ゲートを外した
+                    #   反実仮想（`acct_ok=False` でも room/threshold が通るか）まで含めて
+                    #   出す＝「ゲートが実際に手を止めている席」を数えるため。
+                    _room_p = [_n2 for _n2, _c2 in chars.items()
+                               if _c2.get("alive") and _n2 != today_culprit
+                               and _c2.get("area") and _c2.get("area") == _pc.get("area")]
+                    _b124_info = {
+                        "pre_ok": bool(self.p["frail_supply_push"] and not _wipe
+                                       and _ml_ok and misleader != today_culprit
+                                       and (push_culprit is None or _a77_fired)),
+                        "acct_ok": today_incident in _ACCOUNTED_INCIDENTS,
+                        "room_ok": _room_p == [misleader],
+                        "thr_ok": bool(_u0 - _cool_reaching(today_culprit) >= _pth
+                                       and _u0 - 1 - _cool_reaching(today_culprit) < _pth),
+                        "a77_fired": _a77_fired,
+                    }
+        if B124_PROBE is not None:
+            B124_PROBE(view, set(goal_boards), today_incident, today_culprit,
+                       bool(today_gainful), push_culprit, _b124_info)
 
         # 脅威キャラ＝友好能力で勝ち筋を崩す/情報を開示するキャラ（友好禁止・殺人事件の的）。
         # ★threat_hearts＝その脅威能力の必要友好数（最小）。友好禁止の要否判断に使う
@@ -963,7 +1338,12 @@ class HeuristicMastermind:
 
         # ★勝ち確定＝抑制モード（手練れの知見）：敗北ボードが既に2以上なら勝ちはほぼ固い。
         #   以後は事件の発生を抑えて情報流出（犯人・臨界の手がかり）を防ぐ。
-        locked = any(view.get("board_anyaku", {}).get(b, 0) >= 2 for b in goal_boards)
+        # ★B-119②：判定はループ終了時盤面条件の板（ry_goal_boards）に限定。A-18 病院は
+        #   事件日発火型＝暗躍2到達は「勝ち確定」でなく「発火待ち」＝抑制モードに入ると
+        #   発火に必要な不安pumpを自分で止める自己撞着（s18 L2D1 の decision 34 実測）。
+        _lock_boards = (ry_goal_boards if self.p["hospital_fire_gate"]
+                        else goal_boards)
+        locked = any(view.get("board_anyaku", {}).get(b, 0) >= 2 for b in _lock_boards)
 
         days_left = max(1, view.get("days_per_loop", view["day"]) - view["day"] + 1)
 
@@ -1529,6 +1909,25 @@ class HeuristicMastermind:
                     _dcost = max(0, 2 - ba.get(decoy_board, 0))
                     decoy_funded = _decoy_fits(decoy_board, _dcost, "kp")
 
+        # ★B-193（2026-08-08・既定OFF）：「D1 本命盤 暗躍+2 プッシュ×囮チャネル維持」の発火述語。
+        #   教材＝鈴蘭 seed0 実戦2局（ユーザー=脚本家が同型 D1 で 7/7 ループ取得）。狭い述語＝
+        #   (i) ルールYの盤敗北（ループ終了時評価＝ry_goal_boards）が存在し盤線が資金化されている
+        #   (ii) 偽装ボード（decoy_board）が立っている
+        #   (iii) 囮チャネル＝不穏な噂が脚本にある（能力フェイズの板暗躍＝カードで防げない・40:62）
+        #   (iv) 囮盤は現在値+噂1で臨界2に届く（＝黒猫のループ開始+1等の札ゼロ供給の実績がある盤。
+        #        主人公の板封じはこの盤では構造的に空振り＝B-189 の鏡像。囮の脅威画像が札ゼロで
+        #        維持されるため、M1b の「偽装完成前の本命保留」が不要になる＝一撃完成が正当化される）
+        #   ★locked（勝ち確定＝抑制モード）でも述語は落とさない＝教材の噂→囮は**勝った
+        #   ループでも毎ループ**撃たれている（ループ終了時盤面を 囮2・本命2 に揃えて帰属を
+        #   割る画像の維持が目的＝勝ちループでこそ必要）。抑制すると終了盤面が 囮1・本命2 と
+        #   なり、主人公の消去法に「本命はこの盤」を無償で教える（本実装の初版で実測）。
+        b193_rush = False
+        if (self.B193_MM_BOARD_RUSH and decoy_board is not None
+                and "board" in funded and ry_goal_boards
+                and "不穏な噂" in (view.get("rule_x"), view.get("rule_x2"))
+                and ba.get(decoy_board, 0) + 1 >= 2):
+            b193_rush = True
+
         # ★ゴールボードの暗躍を剥がせる主人公側の役が居るか（居なければ2で敗北確定＝
         #   それ以上（暗躍4等）積むのは無駄。ユーザー指摘 2026-07-06）。
         # ★暗躍を剥がせる役が居る「ボード」の集合（board別）。居ないボードは2で敗北確定＝
@@ -1536,16 +1935,35 @@ class HeuristicMastermind:
         #   ボード限定（巫女）／エリア名の無い汎用除去（転校生・神格）＝全ゴールボード。
         #   ★A-5(d)：以前はグローバルboolで、巫女の神社除去が病院の過剰置き抑制まで無効化していた
         #   （除去できない病院を2超で積み続け、真の敗北ボード神社と同点＝タイブレークで病院を選び敗北）。
+        # ★B-140（2026-08-02）：上の「能力名にエリア名が無ければ汎用（＝全ゴールボード）」は
+        #   KBと食い違う。KB rules/20:123 の転校生は「同一エリアにいる**他のキャラ1人**」＝
+        #   **板は対象に取れない**のに、能力名 `暗躍除去＋友好付与`（engine/data.py:320）に
+        #   エリア名が無いため全ゴールボードの除去役として算入されていた。板を剥がせるのは
+        #   巫女（神社のみ・rules/20:129）と神格（自ボード・rules/20:153）の2人だけ。
+        #   誤算入の向き＝「まだ剥がされうる」と誤認し、2で足りる板へ余分な暗躍を積み続ける。
+        #   是正＝判定を能力名の文字列でなく `sim/abilities.ABILITY_IMPL["board_scope"]`
+        #   （targets 実装と同じ行の宣言）に委ねる＝単一ソース化。
+        #   `board_removal_kb_scope=0` で旧挙動へ bit 復帰（変異テスト用の切替口）。
         board_removal_boards: set[str] = set()
+        _kb_scope = bool(self.p["board_removal_kb_scope"])
         for n, cc in chars.items():
             if not cc["alive"]:
                 continue
             for ab in goodwill_abilities_of(n) or []:
+                if _kb_scope:
+                    # "self_board"（神格）は goal_boards で解決＝旧挙動と同じ範囲に落ちる。
+                    # ∴ 旧との差分は「転校生が空集合になる」ことだけ（最小差分）。
+                    board_removal_boards |= set(
+                        board_anyaku_removal_scope(n, ab["name"], goal_boards))
+                    continue
                 if "暗躍除去" not in ab["name"]:
                     continue
                 named = {b for b in AREAS if b in ab["name"]}
                 board_removal_boards |= named if named else set(goal_boards)
         board_removal = bool(board_removal_boards)  # 後方互換の派生bool
+        # ★B-140：この派生boolは**リポジトリ内に読み手が無い**（`grep -rn 'board_removal\b'`＝
+        #   定義行と本dictへの格納行のみ／読むのは全て board_removal_boards 側）。
+        #   ∴ 転校生を外しても派生bool経由で巻き添えを食う分岐は無い（監査doc B-140 §3）。
 
         # ★A-24'（2026-07-16・FableA承認）：board_x への暗躍供給線を維持する＝board_x を決めている
         #   クロマクを board_x に留める/戻す。供給の本命はクロマクの脚本家能力フェイズの暗躍+1
@@ -1609,14 +2027,19 @@ class HeuristicMastermind:
                "death_board_today": death_board_today, "protect": protect,
                "goal_boards": goal_boards, "board_removal": board_removal,
                "board_removal_boards": board_removal_boards,
+               "ba": dict(ba),   # ★B-119：能力側の板飽和会計（_board_saturated）用
+
                "today_culprit": today_culprit, "today_incident": today_incident,
                "culprits_all": culprits_all,
                "future_culprits": future_culprits, "threats": threats,
                "threat_hearts": threat_hearts,
                "misleader": misleader, "reachable_culprits": reachable_culprits,
+               "self_harm_culprits": self_harm_culprits,   # ★B-118：自殺×自陣資産犯人
                "pump_targets": pump_targets, "fires_today": fires_today,
                "ambiguous_paths": ambiguous_paths, "kp_kill_near": kp_kill_near,
                "decoy_board": decoy_board, "decoy_funded": decoy_funded,
+               # ★B-193：ON時のみ True になりうる（OFF＝常に False＝採点は bit 不変）
+               "b193_rush": b193_rush, "b193_ry_boards": ry_goal_boards,
                "kp_used_tactics": kp_used_tactics,
                "days_left": days_left, "mm_rate": mm_rate,
                "funded": funded, "path_costs": path_costs, "supply": supply,
@@ -1653,10 +2076,20 @@ class HeuristicMastermind:
         return out
 
     def _pick(self, options: list[dict], score) -> dict:
-        """最大スコアの手を返す（同点は seed 固定の rng でタイブレーク）。"""
+        """最大スコアの手を返す（同点は seed 固定の rng でタイブレーク）。
+
+        ★B-120b（2026-08-01・ユーザー裁定「同点なら+1優先で」）＝同点タイでは
+        `暗躍+2`（1ループ1回の切り札）を他の手より後回しにする＝乱数で切り札を
+        浪費しない（B-120 実測＝s18 L3D2 で +1/+2 が25点同点になり rng が +2 を消費）。
+        スコアが違えば従来どおり＝採点には一切触れない（タイブレークのみ）。
+        rng は従来と同じく全 option で1回ずつ消費＝乱数列は不変。
+        `plus2_tie_hold`=0 で旧挙動（純rngタイ）へ bit 復帰。
+        """
+        hold = self.p.get("plus2_tie_hold", 1.0)
         best, best_key = None, None
         for o in options:
-            key = (score(o), self.rng.random())
+            tie = 0 if (hold and o.get("card") == "暗躍+2") else 1
+            key = (score(o), tie, self.rng.random())
             if best_key is None or key > best_key:
                 best, best_key = o, key
         return best
@@ -1670,8 +2103,12 @@ class HeuristicMastermind:
         if decision == "set_card":
             # ★A-54：暗躍+2の非正当先への減点を採点の出口1箇所で引く（_score_set は勝ち筋ごとに
             #   早期returnが多く、各分岐へ差し込むと配線漏れを招く＝[[wiring-forgotten-across-paths]]）。
-            return self._pick(options, lambda o: self._score_set(o, a, view)
-                              - self._plus2_penalty(o, a, view))
+            def _sc(o):
+                return self._score_set(o, a, view) - self._plus2_penalty(o, a, view)
+            best = self._pick(options, _sc)
+            # ★B-215（既定OFF）：先置きダミー＝**席順の入れ替え**。`_pick` の後に差し替える
+            #   ＝option 数も rng の消費列も変わらない（OFF なら1バイトも通らない）。
+            return self._b215_decoy_swap(best, options, a, view, _sc) or best
         if decision == "mastermind_ability":
             return self._pick(options, lambda o: self._score_ability(o, a))
         if decision == "turn_end_ability":
@@ -1712,7 +2149,10 @@ class HeuristicMastermind:
                 or target == a["keyperson"] or (a["killer"] and target == a["killer"])
         if "不安" in ability and ("除去" in ability or "操作" in ability):
             # 犯人の不安（事件の燃料）を消されるなら拒否
-            dangerous = dangerous or target in a["culprits_all"]
+            # ★B-118：自殺×自陣資産犯人は除く＝その不安は燃料でなく自陣資産の退場リスク＝
+            #   主人公が冷やしてくれるなら通してよい（拒否は燃料を自ら守る自傷）。
+            dangerous = dangerous or target in (
+                a["culprits_all"] - a["self_harm_culprits"])
         # ★bool正規化：`x and y` はキラー不在時に None を返しうる（is比較がStopIterationになる）
         dangerous = bool(dangerous)
         return next(o for o in options if o.get("refuse") is dangerous)
@@ -1917,6 +2357,13 @@ class HeuristicMastermind:
                         else self.p["set_board_over_unfunded"])  # 過剰（例:1→3）＝1枚損
             score = ((self.p["set_board_base"] + val * self.p["set_val_mult"])
                      if "board" in a["funded"] else self.p["set_board_unfunded"])
+            # ★B-193 ON時のみ：D1 の一撃完成プッシュ＝ルールY敗北盤へ暗躍+2（need>=2 の一撃）。
+            #   主人公の情報がゼロの D1 に切る＝暗躍禁止の宛先は囮盤（現在値1＝より臨界に近い）へ
+            #   割れる。M1b の hold（下）を経ない＝囮は札ゼロチャネルで勝手に2へ育つ（述語(iv)）
+            #   ため「偽装完成前の保留」の前提が崩れている。教材＝鈴蘭 seed0 の D1 `暗躍+2→都市`。
+            if (a.get("b193_rush") and view["day"] == 1 and val >= 2
+                    and need >= 2 and tgt in a.get("b193_ry_boards", ())):
+                return score + self.p["b193_rush_bonus"]
             # ★完成順の規律（M1b）：偽装ボードが育つ前に本命を2へ満たすと「先に満ちた筋＝本命」と
             #   バレる＋除去/暗躍禁止の的として日数分さらされる。最終日以外は、偽装が未完のうちの
             #   本命完成を保留（減点）＝両ボードを終盤に揃えて帰属を割る。
@@ -1949,6 +2396,12 @@ class HeuristicMastermind:
             cur = view["board_anyaku"].get(tgt, 0)
             if cur >= 2 or (cur >= 1 and val > 2 - cur):
                 return self.p["set_board_locked_over"]   # 偽装は2で十分・超過は無駄
+            # ★B-193 ON時のみ：D1 は囮盤への実弾+1 を通常の decoy(40) から引き上げる＝
+            #   D1 の暗躍禁止1枚の宛先を「本命盤 or 囮盤」の二択に割る伏せ札（主人公は伏せ札の
+            #   位置しか見えない＝B-164）。囮が守られれば本命+2が素通り・本命が守られても
+            #   囮+1は臨界へ（どちらでも1枚は通る＝§1i 二正面）。教材＝鈴蘭D1 `暗躍+1→神社`。
+            if a.get("b193_rush") and view["day"] == 1:
+                return self.p["b193_decoy_d1"]
             return self.p["set_board_decoy"]
         # (2) キーパーソンに暗躍（キラー殺害の前提＝暗躍≥2）。
         #     ★塞がれ検知後はピン留め価値だけ残して優先度を下げ、(2b)のキラー自己暗躍へ切替。
@@ -2029,6 +2482,23 @@ class HeuristicMastermind:
                     and (tgt == a["today_culprit"] or tgt in a["future_culprits"])
                     and th is not None and c["unrest"] >= max(1, th - 1)):
                 return self.p["set_cool_locked"]  # 臨界間際の犯人を冷やして事件を不発に
+        # ★B-122（2026-08-01）：自陣資産犯人（self_harm＝発生が打点負と確定済みの自殺）の燃料を
+        #   **能動的に消す**＝コンボ中止の実手。教材棋譜 FS5日s4 L3D4＝配達が受けられ確定した後も
+        #   冷却の採点分岐が存在せず（0.0）、お嬢様(SK・u=1・臨界1)の自殺が発火して資産全損。
+        #   条件＝臨界以上（発火が現に迫っている）∧ 冷却が事件日までに間に合う会計
+        #   （u0 −（事件日−今日+1）< 臨界。不安-1 は 1/loop 札ではない＝毎日1枚積める）。
+        #   ★B-119 の教訓（自陣犯人への不安-1＝勝ち筋の自己破壊）との整合＝self_harm 限定
+        #   ＝健全な発火は決して冷やさない。gate=0 で分岐ごと無効（旧挙動へ bit 復帰）。
+        if (card == "不安-1" and kind == "character" and self.p["combo_abort_gate"]
+                and tgt in a["self_harm_culprits"] and not a["locked"]):
+            c = chars.get(tgt)
+            th = unrest_threshold_of(tgt)
+            if c and c["alive"] and th is not None and th >= 1 and c["unrest"] >= th:
+                _inc_days = [inc["day"] for inc in view["incidents"]
+                             if inc["culprit"] == tgt and inc["day"] >= view["day"]
+                             and inc["name"] == "自殺"]
+                if _inc_days and c["unrest"] - (min(_inc_days) - view["day"] + 1) < th:
+                    return self.p["set_cool_self_harm"]
         # ★A-66（2026-07-27）：理想filler＝不安0の対象への不安-1。
         #   不安-1は脚本家の1/loop札ではない（10:36・ONCE_PER_LOOP外＝毎日戻る）＋
         #   カウンターは0未満にならず、重なる不安+1は先に解決される（10:23・resolver:379）＝
@@ -2042,6 +2512,23 @@ class HeuristicMastermind:
             c = chars.get(tgt)
             if c and c["alive"] and c["unrest"] == 0:
                 return self.p["set_cool_zero_filler"]
+        # ★B-129（2026-08-01）：幻想への不安は「幻想のいるボードへの不安+1」経由でしか積めない
+        #   （rules/30_characters.md:55＝行動カード被セット不可＋同エリアのボードのカード効果を
+        #   受ける。合法手は sim/legal.py:70-72 が既に出している）。下の不安+1 の採点は
+        #   `kind == "character"` 限定で、この板置きは _score_set 末尾の 0 点に落ちていた＝
+        #   帳簿（_analyze の mm_rate×残ターン）が数えている札の供給を**手として指せない**。
+        #   ∴ 狭い述語を満たす時だけ対象を幻想へ読み替え、以降は既存のキャラ採点に委譲する。
+        #     (i) その板に生存中の幻想が居る（＝板の効果が幻想に複製される・resolver:236-320）
+        #     (ii) 幻想が「今まさに不安を積むべき犯人」＝reachable_culprits（かつ臨界未満）
+        #          または push_culprit（A-63 の押し切り）
+        #   ＝霧まき目的の板置きは対象外（狭い述語＝規約 §12）。gate=0 で旧挙動へ bit 復帰。
+        if card == "不安+1" and kind == "board" and self.p["gensou_board_unrest"]:
+            _g = chars.get("幻想")
+            _gth = unrest_threshold_of("幻想")
+            if (_g and _g["alive"] and _g.get("area") == tgt and _gth is not None
+                    and (("幻想" in a["reachable_culprits"] and _g["unrest"] < _gth)
+                         or a["push_culprit"] == "幻想")):
+                tgt, kind = "幻想", "character"
         if card == "不安+1" and kind == "character":
             if a["locked"]:
                 return self.p["set_unrest_locked"]  # 勝ち確定時は不安を増やさない
@@ -2060,6 +2547,12 @@ class HeuristicMastermind:
                            inc["name"], view["roles"].get(tgt, ""))
                        for inc in view["incidents"]):
                     return self.p["set_unrest_zero_th"]
+                # ★B-118（2026-07-31）：自殺×自陣資産犯人（キラー/SK/クロマク等）への不安＝
+                #   臨界に届かせると自陣の攻撃資産が退場する**打点負**の投資（教材棋譜 FS5日 s4
+                #   L3D1＝お嬢様(SK・臨界1)へ40点で不安+1→L3D4自殺→SK退場）。A-38（打点0＝
+                #   filler化）と違い発火が実害＝負値で「0点の空手」にも劣後させる。
+                if tgt in a["self_harm_culprits"]:
+                    return self.p["set_unrest_self_harm"]
                 # ★A-67：役職効果パス（lovers/friend）の殺害手段になる事件の犯人＝
                 #   発火させること自体が勝ち筋の一部＝同じパスの暗躍と競れる優先度で積む。
                 if (self.p["role_effect_paths"]
@@ -2416,7 +2909,142 @@ class HeuristicMastermind:
             if a["pump_targets"] and c["goodwill"] + 2 < hearts:
                 score = max(1.0, score - self.p["set_gwban_defer"])
             return score
+        # (6) ★B-214（既定OFF）：複線演出＝板へのダミー配置。ここに来る option は
+        #     「板 × 非暗躍札」＝KB `rules/10:70-71` で**解決されない**手（engine は
+        #     `board_bluffs` として無害に記録し、`cards_revealed` で公開される）。
+        #     採点しない（＝この分岐に入らない）と 0点タイの籤になるだけ＝複線演出にならない。
+        if (self.B214_BOARD_DECOY and kind == "board" and card not in _ANRYAKU_VALUE
+                and self.p["b214_decoy_board"]
+                and card in self._B214_CARD_PREF
+                and tgt == self._b214_decoy_target(a, view)):
+            # 札の選択も**決定的**（乱数不使用）＝優先順のεで一意に決める。
+            # ε<0.01＝他の採点項（最小段差 0.5）を跨がない＝帯の順序に影響しない。
+            i = self._B214_CARD_PREF.index(card)
+            return self.p["b214_decoy_board"] + (len(self._B214_CARD_PREF) - i) * 0.001
         return 0
+
+    # -- ★B-214 複線演出（板へのダミー配置） -------------------------------
+
+    def _b214_decoy_target(self, a: dict, view: dict) -> str | None:
+        """今ターンのダミーを置く板を **局面から一意に** 決める（None＝置かない）。
+
+        ★乱数を使わない＝`PYTHONHASHSEED=0` での bit 再現性を壊さない（§71-4 の要件）。
+        材料は脚本家が正当に知っている情報だけ（自分の伏せ札・公開の盤面・自分の配役／
+        ルールY）＝主人公の手札の中身は一切見ない。
+
+        述語（狭い述語＝規約§12。教材 `docs/feedback_logs/` の全数調査から）:
+          (B) 今ターン、自分はまだ**板に1枚も置いていない**。
+              ＝主人公の板ガード（`暗躍禁止` は1ターン1枚＝`rules/10:61`）の宛先を
+              ダミーで**独占**できる。実測＝板へ本命暗躍を置いていないターンのダミーは
+              **19枚中15枚(79%)** が `暗躍禁止` を吸ったのに対し、板に本命がある
+              ターンのダミーは **20枚中10枚(50%)** しか吸わない。
+              ★この条件が「1ターンにダミーは最大1枚」の上限も兼ねる。
+          (A) 今ターン、既に**キャラへ暗躍札**を伏せてある＝守るべき本命がある
+              （上記19枚のうち17枚がこの形。本命ゼロのターンのダミーは吸っても得が無い）。
+        板の選択＝「別の説明が成立する板」（複線演出）＝既存の偽装ボード `decoy_board`
+        →無ければ自分のゴール盤を除いた連想順→最後に残り。連想順は `_analyze_impl` の
+        `_prefs` と同一（BTX＝封印の神社／FS＝守るべき場所の学校）。
+        """
+        if "b214_decoy" in a:
+            return a["b214_decoy"]
+        a["b214_decoy"] = None
+        mine = [p for p in (view.get("placements") or ())
+                if p.get("owner") == "mastermind"]
+        if any(p.get("target_kind") == "board" for p in mine):
+            return None                                   # (B)
+        if not any(p.get("target_kind") == "character"
+                   and p.get("card") in _ANRYAKU_VALUE for p in mine):
+            return None                                   # (A)
+        pick = self._decoy_board_pick(a, view)
+        a["b214_decoy"] = pick
+        return pick
+
+    def _decoy_board_pick(self, a: dict, view: dict,
+                          exclude: frozenset | set | tuple = ()) -> str | None:
+        """ダミーを置く板を**局面から一意に**選ぶ（B-214／B-215 共通・乱数不使用）。
+
+        「別の説明が成立する板」（複線演出）＝既存の偽装ボード `decoy_board`
+        →無ければ自分のゴール盤を除いた連想順→最後に残り。連想順は `_analyze_impl` の
+        `_prefs` と同一（BTX＝封印の神社／FS＝守るべき場所の学校）。
+        `exclude`＝この板は選ばない（B-215：同ターンに本命の板暗躍を置く板と衝突させない。
+        衝突させると `sim/legal` の DUP_TARGET で**本命が次の席で非合法になる**）。
+        """
+        # 幻想が居る板の非暗躍札は**実効**（KB 30 幻想特性・`sim/legal:70-72`）＝ダミーではない
+        gen = {c.get("area") for c in view["characters"]
+               if c.get("name") == "幻想" and c.get("alive") and c.get("area")}
+        prefs = (("神社", "学校", "都市", "病院") if view.get("rule_x2")
+                 else ("学校", "神社", "都市", "病院"))
+        cand = [b for b in prefs
+                if b in AREAS and b not in gen and b not in exclude]
+        goal = set(a.get("goal_boards") or ())
+        pick = a.get("decoy_board") if a.get("decoy_board") in cand else None
+        if pick is None:
+            pick = next((b for b in cand if b not in goal), None)
+        if pick is None:
+            pick = cand[0] if cand else None
+        return pick
+
+    # -- ★B-215 先置きダミー（1手先読みの席順入れ替え） ----------------------
+
+    def _b215_decoy_swap(self, best: dict | None, options: list[dict],
+                         a: dict, view: dict, score) -> dict | None:
+        """今ターンの最善手が「板への本命暗躍」なら、**先にダミーを置いて本命を1席あとへ回す**。
+
+        None＝入れ替えない（＝`decide` は従来どおり `best` を返す）。
+
+        ★なぜ採点ではなく席順の入れ替えなのか（設計案の比較＝報告 §2）：
+          貪欲逐次選択は各席で argmax を取るので、「ダミーを1枚目に置く」は
+          **ダミーの点が本命の板暗躍を上回る**ことを要求する＝本命を捨てる方向になる。
+          人間の手筋は逆で「**本命は必ず置く。ただし席順を後ろにする**」＝
+          席の並べ替えであって評価の上書きではない。∴ argmax を1回だけ先読みして
+          「本命は次の席でも**合法**（対象が違う＝DUP_TARGET に触れない・札は手札に残る）」を
+          **構造で**保証したうえで席を入れ替える。
+          ★保証されるのは**合法性まで**＝次の席の argmax が本命を選び直すことは保証されない
+          （`_score_set` は伏せ済み配置に依存するため再評価が起きうる）。実測＝入れ替え
+          451回中 440回（97.6%）で本命の板暗躍が同ターンに実際に置かれた（残り12回は
+          再評価でキャラ側などへ移った）。ここは**正直な限界**として報告に残す。
+
+        ★決定的再現性（規約§4・B-214 と同じ制約）：
+          - `_pick` の呼び出し回数・option 数は**入れ替えても変わらない**（先に `best` を
+            取ってから差し替えるだけ）＝rng の消費列は不変。
+          - 選ぶ板は `_decoy_board_pick`（連想順の一意規則）、札は `_B214_CARD_PREF` の
+            先頭一致＝**局面から一意**。乱数は使わない。
+
+        述語（狭い述語＝規約§12）:
+          (P1) 最善手が **板 × 暗躍札**（＝守る価値のある本命がある）
+          (P2) 今ターンの自分の配置が **1枚以下**＝残席2以上＝**本命を必ず次の席で置ける**
+          (P3) 今ターンまだ**板に1枚も置いていない**（＝1ターンにダミーは最大1枚。
+               B-214 の述語(B) と同じ上限）
+          (P4) 本命の評価が `b215_decoy_first` **未満**（＝頻度の掃引点。0.0 で不発火）
+          (P5) 本命の板と**違う板**が取れる（DUP_TARGET 回避＝本命の合法性を壊さない）
+        """
+        if not (self.B215_DECOY_FIRST and best):
+            return None
+        if (best.get("target_kind") != "board"
+                or best.get("card") not in _ANRYAKU_VALUE):
+            return None                                          # (P1)
+        mine = [p for p in (view.get("placements") or ())
+                if p.get("owner") == "mastermind"]
+        if len(mine) > 1:
+            return None                                          # (P2)
+        if any(p.get("target_kind") == "board" for p in mine):
+            return None                                          # (P3)
+        if score(best) >= self.p["b215_decoy_first"]:
+            return None                                          # (P4)
+        tgt = self._decoy_board_pick(a, view, exclude=(best.get("target"),))
+        if tgt is None or tgt == best.get("target"):
+            return None                                          # (P5)
+        for card in self._B214_CARD_PREF:
+            for o in options:
+                if (o.get("target_kind") == "board" and o.get("target") == tgt
+                        and o.get("card") == card):
+                    self._b215_stats["swap"] += 1
+                    self._b215_stats[f"swap_card:{card}"] += 1
+                    self._b215_stats[f"swap_board:{tgt}"] += 1
+                    self._b215_stats[f"swap_main:{best.get('card')}"
+                                     f"@{best.get('target')}"] += 1
+                    return o
+        return None
 
     # -- 脚本家能力フェイズ ---------------------------------------------------
 
@@ -2460,6 +3088,58 @@ class HeuristicMastermind:
                     if c["alive"] and c["area"] == reveal_area)
         return self.p["ab_sparse_penalty"] * max(0.0, self.p["ab_reveal_crowd"] - crowd)
 
+    @staticmethod
+    def _final_day_zero_payoff(inc_name: str, culprit: str, view: dict,
+                               roles: dict) -> bool:
+        """B-152（22b）：**最終日**に発生しても敗北条件を1つも動かせない事件か。
+
+        ★大前提＝最終日でも**事件フェイズ（7）の後にターン終了フェイズ（9）が走る**
+        （`rules/00_rules_core.md:104-112`）＝事件の効果は**ターン終了フェイズの役職能力の燃料**
+        になりうる（キラーの暗躍4→主人公殺害 `rules/40:95`／`rules/50:110`、
+        メインラバーズ `rules/50:160`、シリアルキラー `rules/50:166`、
+        タイムトラベラー `rules/50:129-131`、妄想拡大ウイルスのSK化）。
+        ∴ **「最終日だから無価値」は誤り**＝ゼロと言えるのは燃料経路が1本も無い脚本だけ。
+
+        判定は**脚本＋配役だけ**（静的）で行う＝生死や同室は見ない＝**保守側**
+        （疑わしきは False＝従来どおり投資する）。狭い述語（規約 §12）。
+
+        - 黒猫が犯人 … `rules/30_characters.md:75-77` 特性2＝事件効果は「何も起きない」。
+        - 流布 … 効果は友好の付け替えのみ（`rules/40:153`）。友好を読む敗北条件は
+          タイムトラベラー（`rules/50:129-131`）だけ。主人公能力フェイズ（6）は事件（7）より
+          **前**＝そのループの能力使用にはもう効かず、カウンターはループ開始で全除去
+          （`rules/00:87-89`）＝次ループにも残らない。★A.I.（`rules/30:47` 全カウンターを
+          不安として扱う特性）が居る脚本は保守側で除外しない。
+        - 不安拡大 … 不安+2／暗躍+1（`rules/40:149`＝どちらも**キャラ**＝板の敗北条件には
+          届かない）。行き先がキラー／メインラバーズ／僕と契約のKP（`rules/50:43`）／
+          ウイルスのSK化 のいずれにも無い時だけゼロ。
+        - 自殺 … 犯人の死亡のみ（`rules/40:148`）。犯人が KP/フレンド/ラバーズ
+          （`rules/50:153,159`＝相方に不安6）でなく、従者の身代わり（`rules/30:65`）でも
+          VIP が死なず、シリアルキラーが居ない時だけゼロ。
+        """
+        if culprit == "黒猫":
+            return True
+        vals = set(roles.values())
+        if inc_name == "流布":
+            if "タイムトラベラー" in vals:
+                return False
+            return not any(c["name"] == "A.I." for c in view["characters"])
+        if inc_name == "不安拡大":
+            if "キラー" in vals or "メインラバーズ" in vals:
+                return False
+            if view.get("rule_y") == "僕と契約しようよ！" and "キーパーソン" in vals:
+                return False
+            _xs = (view.get("rule_x"), view.get("rule_x2"))
+            return "妄想拡大ウイルス" not in _xs
+        if inc_name == "自殺":
+            r = roles.get(culprit)
+            if r in ("キーパーソン", "フレンド", "ラバーズ"):
+                return False
+            if (culprit in ("お嬢様", "大物")
+                    and roles.get("従者") in ("キーパーソン", "フレンド")):
+                return False
+            return "シリアルキラー" not in vals
+        return False
+
     def _kp_anyaku_cap(self, a: dict) -> int:
         """A-48上限会計：KP暗躍の正当上限（除去者生存3＝除去1回を耐えるバッファ／不在2）。
         ★A-62でカード側・能力側・事件側からも参照する共通ヘルパー化（値は A-48 と同一）。"""
@@ -2487,6 +3167,19 @@ class HeuristicMastermind:
                 return chars[tgt].get("anyaku", 0) < 2
         return False   # 非勝ち筋キャラ・過剰・塞がれ後のKP等＝前進ゼロ
 
+    def _board_saturated(self, tgt: str, a: dict) -> bool:
+        """★B-119：板の暗躍価値は2で飽和（ループ終了時条件・病院の事件の主人公死亡は共に「≥2」）。
+
+        その板の除去役が居ない限り、2到達後の追加暗躍は打点ゼロ＝カード側 A-21/A-5(d)
+        （`set_board_locked_over`・2001-2003行）と同一述語を能力側（クロマク/噂）にも適用する。
+        従来は locked（勝ち確定＝抑制モード）が噂側でこの飽和を偶発的に代行していた＝
+        locked を ry 板に限定（B-119②）した分を明示の飽和会計として引き継ぐ
+        （guard 3日級 s0/s2/s5 実測＝これが無いと病院2完成後に噂を重ねて3にする新たな漏出手が出る）。
+        """
+        return (bool(self.p["hospital_fire_gate"])
+                and a["ba"].get(tgt, 0) >= 2
+                and tgt not in a["board_removal_boards"])
+
     def _score_ability(self, o: dict, a: dict) -> float:
         if o.get("action") == "pass":
             return self.p["ab_pass"]  # 何も得が無ければパス（負スコアは作らない）
@@ -2497,7 +3190,29 @@ class HeuristicMastermind:
             if o.get("action") == "不穏な噂":
                 on_goal = (o["target_kind"] == "board"
                            and o["target"] in a["goal_boards"])
-                if not on_goal or a["locked"]:
+                # ★B-193 ON時のみ：囮チャネル維持（教材＝鈴蘭の毎ループ D3 噂→神社）。
+                #   (a) 最終日、どのゴール盤も噂1発で臨界に届かない（＝噂→本命は実利ゼロ）なら、
+                #       噂は囮盤へ＝ループ終了時盤面の帰属を割る画像（囮=2）を札で防げない
+                #       チャネルで維持する。ゴール盤が噂1発で完成する日は従来どおり本命が勝つ
+                #       （この分岐は発火しない）。
+                #   (b) 噂→本命盤が単独で臨界に届かない日（cur+1<2）は温存（パス未満）＝
+                #       最終日の (a)/(本命完成) に切り札を残す（従来は D1 に実利ゼロで消費）。
+                if a.get("b193_rush"):
+                    # (a) は locked（勝ち確定）でも撃つ＝勝ちループでこそ終了盤面の帰属を
+                    #     割る画像が要る（述語のコメント参照）。
+                    if (o["target_kind"] == "board"
+                            and o["target"] == a.get("decoy_board")
+                            and a["days_left"] <= 1
+                            and not any(a["ba"].get(g, 0) + 1 >= 2
+                                        and not self._board_saturated(g, a)
+                                        for g in a["goal_boards"])):
+                        return self.p["b193_rumor_decoy"]
+                    if (on_goal and not a["locked"]
+                            and not self._board_saturated(o["target"], a)
+                            and a["ba"].get(o["target"], 0) + 1 < 2):
+                        return self.p["b193_rumor_hold"]
+                if (not on_goal or a["locked"]
+                        or self._board_saturated(o["target"], a)):
                     return self.p["ab_rumor_offgoal"]
                 # ★噂は同エリア不問＝クロマクのような役職バレを起こさない（下の reveal_cost は
                 #   適用しない）。ゴール前進なら満額。
@@ -2514,7 +3229,8 @@ class HeuristicMastermind:
                 reveal_area = _tc["area"] if _tc else None
             reveal_cost = self._reveal_cost(o, a, reveal_area)
             if o["target_kind"] == "board":
-                if o["target"] in a["goal_boards"]:
+                if (o["target"] in a["goal_boards"]
+                        and not self._board_saturated(o["target"], a)):
                     return self.p["ab_anyaku_board"] - reveal_cost
                 # ★A-20：非ゴールボードへのmm能力暗躍は無価値＝不使用（pass未満）。mm能力はカード枠を
                 #   消費しない＝filler理論の適用外で、価値ゼロの発動は暗躍出現＝クロマク位置シグナルを
@@ -2590,6 +3306,9 @@ class HeuristicMastermind:
             c = a["chars"].get(tgt)
             th = unrest_threshold_of(tgt)
             below = c and th is not None and c["unrest"] < th
+            # ★B-118：自殺×自陣資産犯人への不安＝打点負（カード側と同じ会計・pass=1.0に必ず劣後）。
+            if tgt in a["self_harm_culprits"]:
+                return self.p["ab_unrest_self_harm"]
             # ★A-63：事件日の押し切り＝臨界到達後も冷却容量に抗して臨界以上を維持する
             #   （belowゲート不問。カード側と別時点の臨界判定で連動不発になるのを塞ぐ）。
             if tgt == a["push_culprit"]:
@@ -2614,6 +3333,28 @@ class HeuristicMastermind:
                     and th is not None and c["unrest"] + 1 >= th):
                 return self.p["ab_unrest_cover"]
             return self.p["ab_weak"]
+        if o["kind"] == "goshinboku":
+            # ★B-233：ご神木の特性は**強制**（現物カード 2026-08-16）＝使うか否かは選べないが、
+            #   「どのカウンターを誰へ移すか」は脚本家が選ぶ。ここはその選択の値付け。
+            #   ★自由順ループでは全て pass 未満（負）に落として自発的には使わせない
+            #   ＝強制段（`sim/flow.py` の末尾）でだけ相対順が効くようにする（順序の自由は残す）。
+            #   ・友好＝ご神木には友好能力が無い＝上に載っている限り死に札。他キャラへ移すと
+            #     そこで**生きる**＝主人公に塩を送る＝最悪（最下位）。
+            #   ・不安＝ご神木の臨界は4（`rules/30`）＝ここに載っていても使いにくい。犯人へ
+            #     移せば事件の発生に近づく＝最良。臨界に届かない相手なら位置情報を漏らすだけ。
+            #   ・暗躍＝中立（キャラ上の暗躍はご神木でも他キャラでも用途が変わらない）。
+            #   ★これは KB から導けない値付け＝**較正前の第一案**（発火面積は 3日級4局/5日級4局）。
+            tgt = o["target"]
+            c = a["chars"].get(tgt)
+            th = unrest_threshold_of(tgt)
+            below = bool(c and th is not None and c["unrest"] < th)
+            if o["counter"] == "unrest":
+                if below and (tgt == a["today_culprit"] or tgt in a["future_culprits"]):
+                    return -1.0        # 強制段の最良
+                return -2.0
+            if o["counter"] == "anyaku":
+                return -3.0
+            return -4.0                # goodwill＝主人公を利する＝最下位
         return 0
 
     # -- ターン終了・事件・ループ開始 -----------------------------------------

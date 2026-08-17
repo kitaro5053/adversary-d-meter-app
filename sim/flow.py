@@ -39,6 +39,22 @@ from .state import PROTAGONIST_SEATS, GameState, Script, validate_script
 from .views import mastermind_view, protagonist_view
 
 
+def log_safe_chosen(chosen):
+    """リプレイ素材にする chosen（★B-115）＝表示層の provenance（`prov`）を剥がした写し。
+
+    AI主人公は選んだ option に `prov`（B-100 の上書き席="b100"／一致席="b100_match"）を
+    書き込むことがある。決定ログ内の chosen は options 内の**同一オブジェクト**なので
+    ライブの整合（`chosen in options`）は保たれるが、**保存ログから再生素材**
+    （human_choices／ai_replay）を取り出して**新規列挙の options** と dict 同値で
+    照合する時だけ prov が邪魔になる（ReplayDesync）。∴ 剥がすのは取り出し口
+    （`arena/gamelog.split_day_tail`）＝本関数はその単一ソース。
+    prov が無ければ**同一オブジェクトをそのまま返す**（従来と bit 同一）。
+    """
+    if isinstance(chosen, dict) and "prov" in chosen:
+        return {k: v for k, v in chosen.items() if k != "prov"}
+    return chosen
+
+
 def _make_decider(state: GameState, agents: dict, log: list[dict]):
     """decide(actor, decision_type, options) -> 選択。決定ログに view/options/chosen を記録。"""
 
@@ -56,6 +72,24 @@ def _make_decider(state: GameState, agents: dict, log: list[dict]):
         })
         return chosen
 
+    return attach_mm_bluff(decide, agents)
+
+
+def attach_mm_bluff(decide, agents: dict):
+    """★B-214/B-215：脚本家エージェントの申告（`wants_bluff_options`）を `decide` に載せる。
+
+    脚本家が「板へのダミー配置（複線演出）」を使うなら、脚本家の set_card 候補に
+    allow_bluff を開く（KB `rules/10_action_cards.md:70-71`＝脚本家は暗躍以外もボードに
+    置ける／それらは**解決されない**）。両切替口 OFF なら False＝候補列は従来と1手も
+    変わらない（＝`HeuristicMastermind._pick` の rng 消費数も不変＝両ベンチ bit 不変）。
+
+    ★**自前で `decide` を組んで `run_day` を呼ぶ側は必ずこれを通すこと**（配線の単一ソース）。
+      通し忘れると、同じエージェントなのに `run_day` が作る候補列が変わり、rng の消費が
+      ずれて**リプレイ／反実仮想が原局面と割れる**＝[[wiring-forgotten-across-paths]]。
+      （2026-08-14＝B-214/B-215 の既定 ON 化で `arena/counterfactual.py` が実際に割れた。）
+    """
+    decide.mm_allow_bluff = bool(
+        getattr(agents.get("mastermind"), "wants_bluff_options", False))
     return decide
 
 
@@ -138,8 +172,9 @@ def run_day(state: GameState, decide, human_seats=frozenset()) -> None:
     #    ※この時点の盤面スナップショットは撮らない（主人公行動フェイズ後＝6枚伏せた盤面で
     #      十分に読めるため冗長。ユーザー要望・2026-07-03）。
     state.phase = "mastermind_set"
+    _mm_bluff = bool(getattr(decide, "mm_allow_bluff", False))   # ★B-214（既定 False）
     for _ in range(3):
-        _opts = legal.set_card_options(state, "mastermind")
+        _opts = legal.set_card_options(state, "mastermind", allow_bluff=_mm_bluff)
         if not _opts:
             # ★縮退ケース（2026-07-08実測）：キャラがほぼ全滅した終盤、対象を取れる
             #   カードが尽きて置ける手が無いことがある（死体セット不可・暗躍+2は1/L・
@@ -252,6 +287,25 @@ def run_day(state: GameState, decide, human_seats=frozenset()) -> None:
             break
         apply_mastermind_ability(state, chosen)
         used.add(chosen["action"])
+    # ★ご神木の強制（B-233・現物カード 2026-08-16「脚本家もこの特性を用いる（強制）」）。
+    #   自由順のループで脚本家が使わずに pass しても、使える組み合わせが残っているなら
+    #   必ず1回使わせる（どのカウンターを誰へ移すかの選択だけは脚本家に残る＝pass 無しで decide）。
+    #   他能力の適用で対象が消えた場合は options が空＝不発（できないことは強制されない）。
+    forced = legal.goshinboku_forced_options(state, used)
+    if forced:
+        chosen = decide("mastermind", "mastermind_ability", forced)
+        apply_mastermind_ability(state, chosen)
+        used.add(chosen["action"])
+    # ★B-234：「不発生」の観測を公開イベント化する。ご神木にカウンターがあり同エリアに
+    #   生存他キャラが居るのに、この脚本家能力フェイズで特性が使われなかった＝上の強制段が
+    #   空だった＝**ご神木の役職は友好無視を持たない**（B-233 の是正で初めて健全になった演繹）。
+    #   ★これは卓上では誰にでも見えている公開事実（カウンター・エリア・生死）だが、
+    #     移動とキャラ暗躍の増減は公開イベント列に残らないため `history` から復元できない
+    #     ＝判定した当人（sim）が書き出す。先例＝`anyaku` の `present`／`loop_end` の
+    #     `toshi_anyaku`（どちらも「卓上では見えるが復元が面倒な公開事実」の書き出し）。
+    #   ★秘匿情報は載せない（役職も、友好無視の有無も、イベント名以外の何も出さない）。
+    if legal.goshinboku_idle_observed(state, used):
+        state.pub({"event": "goshinboku_idle"})
     state.snapshot("脚本家能力フェイズ後")
 
     # 6. 主人公能力：リーダーが友好能力の使用を宣言→脚本家が拒否/解決（00:110 / 20）。

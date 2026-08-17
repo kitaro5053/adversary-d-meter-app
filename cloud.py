@@ -228,6 +228,19 @@ def save_snapshot(payload: dict, *, slot: str = "auto", token: str | None = None
     tok = uuid.uuid4().hex[:12]
     row["token"] = tok
     r = _post("game_saves", row)
+    if r is not None and r.status_code == 409:
+        # ★U-13（2026-08-08）：(session_id, slot) の一意制約と衝突（提案書§9のSQL＝
+        #   1セッション×1スロットは1行）。呼び出し側がトークンを失っていても2度目の保存を
+        #   救う＝既存行のトークンを (session_id, slot) で引いて PATCH（上書き）に回す。
+        #   token 列は書き換えない＝発行済みトークンを無効化しない（返り値も既存トークン）。
+        rows = _get("game_saves", {"session_id": f"eq.{row['session_id']}",
+                                   "slot": f"eq.{slot}", "select": "token", "limit": "1"})
+        old = str(rows[0].get("token") or "") if rows and isinstance(rows[0], dict) else ""
+        if not old:
+            return None
+        row.pop("token", None)
+        r2 = _patch("game_saves", {"token": f"eq.{old}"}, row)
+        return old if (r2 is not None and r2.status_code < 300) else None
     if r is None or r.status_code >= 300:
         return None
     threading.Thread(target=_rpc, args=("purge_old_saves", {}), daemon=True).start()

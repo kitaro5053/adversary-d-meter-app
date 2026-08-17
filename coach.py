@@ -211,7 +211,13 @@ def advise(view: dict, decision: str, options: list[dict],
     """
     from agents.debug import ProbedProtagonist
     bot = ProbedProtagonist(seed, top=max(top, 3))
-    chosen = bot.decide(view, decision, list(options))
+    # ★B-115：AIは選んだ option に provenance（`prov`）を書き込むことがある
+    #   （B-100 の上書き席＝"b100"／一致席＝"b100_match"）。coach は人間の options を
+    #   預かる立場＝**コピーを渡して呼び出し元の dict を汚さない**（tests/test_coach.py の
+    #   非変異契約）。推奨として返す時は prov を剥がす＝options の要素と同値に戻す。
+    chosen = bot.decide(view, decision, [dict(o) for o in options])
+    if isinstance(chosen, dict):
+        chosen.pop("prov", None)
     rec = bot.records[-1] if bot.records else {}
     est = rec.get("estimates", {})
     reasons = _reasons_for(view, decision, chosen, est)
@@ -221,10 +227,12 @@ def advise(view: dict, decision: str, options: list[dict],
     if (decision == "set_card" and team_cards_this_turn
             and "暗躍禁止" in team_cards_this_turn
             and isinstance(chosen, dict) and chosen.get("card") == "暗躍禁止"):
-        rest = [o for o in options if o.get("card") != "暗躍禁止"]
+        rest = [dict(o) for o in options if o.get("card") != "暗躍禁止"]
         if rest:
             bot2 = ProbedProtagonist(seed, top=max(top, 3))
             chosen = bot2.decide(view, decision, rest)
+            if isinstance(chosen, dict):
+                chosen.pop("prov", None)
             rec = bot2.records[-1] if bot2.records else rec
             est = rec.get("estimates", est)
             reasons = ["⚠ 味方が既に暗躍禁止をセット済み＝2枚出すと自滅（両方不発）なので、"

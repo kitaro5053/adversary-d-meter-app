@@ -233,9 +233,27 @@ def resolve_action_phase(board: Board, cultist_ignore=None) -> Adjudication:
     無視の有無で結果が変わらない＝コールバックは呼ばない。"""
     adj = Adjudication()
 
-    # 幻想（生存）は「同エリアのボードのカード効果を受ける」特性（KB: 30）。
-    # 幻想のいるエリアのボードに置かれた対キャラカード（移動/不安/友好/各禁止）は幻想が受ける
-    # ＝内部的に対象を幻想へ読み替える。暗躍/暗躍禁止はボード本来のカードなので読み替えない。
+    # 幻想（生存）は「同エリアのボードのカード効果を受ける」特性（KB: 30 一覧表・幻想の特性）。
+    # 幻想のいるエリアのボードに置かれたカードは幻想が受ける。
+    #
+    # ★実装が2経路に分かれる理由（KB: 10:67-71 が根拠・E-1で明文化 2026-07-27）：
+    #   「**ボードには暗躍カウンターのみ置かれる（友好・不安は不可）**。ボード自体は移動しない。
+    #     よってボードにセットして実際に解決されるのは 主人公＝暗躍禁止のみ／
+    #     脚本家＝暗躍+1・暗躍+2のみ。それ以外はブラフ」
+    #   ＝**不安/友好/移動はボード自身が元々何も受けない**ので、幻想への「対象の置き換え」と
+    #     「効果の複製」は**結果が同一**＝従来の読み替え（_eff_at）のままで正しい（変更不要）。
+    #   ＝**置き換えと加算で差が出るのは暗躍系だけ**。
+    #
+    # ★E-1（2026-07-27・ユーザー裁定＝原本保持者による確定）：暗躍系は「**両方に乗る**」。
+    #   裁定文言＝「ボードに暗躍載せたら不安や友好と同じように幻想にも暗躍がのります」
+    #            ＋「両方に乗るが正しいです」。
+    #   ＝ボードの暗躍カウンターは従来どおり増え、**加えて幻想にも同量が乗る**（効果の複製）。
+    #   旧実装は「暗躍系はボード本来のカードだから読み替えない」として幻想側を落としていたが、
+    #   これは**ユーザー裁定を経ていない実装側の仮定**で、KB本体（30 幻想の特性）に
+    #   除外の記述は無い＝誤りだった。
+    #   ★暗躍禁止も同様に両方へ効く：板の暗躍禁止はボードの暗躍を止め、**同時に幻想への
+    #   複製分も止める**（幻想は行動カード被セット不可＝主人公は幻想へ直接置けないので、
+    #   これが唯一の防御手段。届かないと一方通行のポンプになる）。
     genso = next((c for c in board.characters.values()
                   if c.name == "幻想" and c.alive), None)
     genso_area = genso.area if genso else None
@@ -247,7 +265,7 @@ def resolve_action_phase(board: Board, cultist_ignore=None) -> Adjudication:
     #     (1) 移動カード/移動禁止 ＝ **初期位置**のボードが基準（移動はここで決まる）
     #     (2) 非移動カード（不安/友好/不安禁止/友好禁止）＝ **移動解決後の幻想の位置**で再評価
     #         ＝移動先ボードのカードを受ける／出発地ボードのカードはもう受けない（対称）
-    #   暗躍/暗躍禁止はボード本来のカード＝どちらの段でも読み替えない。
+    #   暗躍系（E-1の複製）も (2) と同じ**移動解決後**の位置を基準にする（下の _genso_anyaku_dup）。
     _move_like = MOVE_CARDS | {MOVE_BAN}
     _post_move_redirectable = {UNREST_BAN, GOODWILL_BAN} | set(UNREST_DELTA) | set(GOODWILL_PLUS)
 
@@ -320,9 +338,23 @@ def resolve_action_phase(board: Board, cultist_ignore=None) -> Adjudication:
     adj.n_protagonist_kinshi = n_kinshi
     self_negate = adj.n_protagonist_kinshi >= 2
 
+    # ★E-1（2026-07-27・ユーザー裁定「両方に乗る」）：幻想が居るエリアのボードに置かれた
+    #   暗躍+/暗躍禁止は、**ボードに従来どおり効いた上で、幻想にも同じ効果が複製される**。
+    #   位置の基準は (2) と同じ**移動解決後**（genso_area_after）。
+    #   ★対象の書き換え（_eff_at）ではなく**効果の複製**なので、暗躍系だけこの別経路を通す。
+    #   ★n_kinshi（複数の暗躍禁止＝自滅）は**複製前の実カード枚数**で数える（上で算出済み）＝
+    #     複製を数えると1枚の暗躍禁止が2枚に見えて誤って自滅する。
+    _genso_anyaku_dup = [
+        Placement(p.owner, p.card, "幻想", "character")
+        for p in board.placements
+        if (genso_area_after and p.target_kind == "board"
+            and p.target == genso_area_after
+            and (p.card in ANRYAKU_PLUS or p.card == "暗躍禁止"))
+    ]
+
     # 対象ごとに暗躍+と暗躍禁止を集計
     targets: dict[tuple[str, str], dict] = {}
-    for p in eff:
+    for p in eff + _genso_anyaku_dup:
         if p.card in ANRYAKU_PLUS or p.card == "暗躍禁止":
             key = (p.target, p.target_kind)
             t = targets.setdefault(key, {"plus": 0, "kinshi": False, "invalid": None})

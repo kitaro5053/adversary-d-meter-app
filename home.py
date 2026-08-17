@@ -117,18 +117,34 @@ def _notes_html() -> str:
             f'<ul class="hb-notes">{notes}</ul></div>')
 
 
+def _banner_path(stable: bool) -> str | None:
+    """ホームのバナー画像パス（無ければ None＝テキストタイトルへフォールバック）。
+
+    ★オリジナルバナー（ユーザー制作 2026-07-25）：assets/banner.jpg があれば画像タイトル、
+    無ければ従来のテキストタイトル（フォールバック＝ミラー欠落やローカルでも壊れない）。
+    ★U-11（2026-07-31・ユーザー要望）：**開発版のみ** assets/dev_banner.jpg を優先
+    （開発版と安定版でバナーを分ける。dev_banner はミラーに書き出さない＝安定版には存在
+    しない前提だが、stable フラグでも二重に守る。無ければ banner.jpg へフォールバック）。
+    """
+    _dir = os.path.dirname(os.path.abspath(__file__))
+    if not stable:
+        dev = os.path.join(_dir, "assets", "dev_banner.jpg")
+        if os.path.exists(dev):
+            return dev
+    base = os.path.join(_dir, "assets", "banner.jpg")
+    return base if os.path.exists(base) else None
+
+
 def render_home(app_version: str = "", build_info: str = "",
-                mobile: bool = False) -> None:
+                mobile: bool = False, stable: bool = False) -> None:
     """ホーム解説ページ＋各モードへのナビゲーションボタンを描く。
 
     ナビボタンは app_mode（サイドバーradioのkey）に代入して rerun＝以後の切替と同一経路。
     on_click コールバックは次回runのwidget生成前に走るため、radioのkeyへ安全に代入できる。
     """
     st.markdown(_STYLE, unsafe_allow_html=True)
-    # ★オリジナルバナー（ユーザー制作 2026-07-25）：assets/banner.jpg があれば画像タイトル、
-    #   無ければ従来のテキストタイトル（フォールバック＝ミラー欠落やローカルでも壊れない）。
-    _banner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "banner.jpg")
-    if os.path.exists(_banner):
+    _banner = _banner_path(stable)
+    if _banner is not None:
         try:
             st.image(_banner, use_container_width=True)
         except TypeError:  # 旧Streamlit（use_container_width未対応）

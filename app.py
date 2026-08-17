@@ -185,7 +185,8 @@ MODELS = {
 TRANSLATOR_MODEL = "claude-sonnet-5"
 
 # 機能の節目で手動更新する人間可読バージョン（git短縮ハッシュとは別の目印）。
-APP_VERSION = "0.23.0"  # ★2026-07-31昇格：E-2行方不明の禁止エリア（ルール違反修正）・供給会計A-78・
+APP_VERSION = "0.24.0"  # ★2026-08-17昇格（安定版が7/31版のまま17日分未反映だった件＝§72-36。
+#   ★以後は同期のたびに必ず上げる＝バージョン番号だけで世代が判別できるようにする）。旧0.23.0＝2026-07-31昇格：E-2行方不明の禁止エリア（ルール違反修正）・供給会計A-78・
 #   脅威モデル収支化DP-6・噂の残弾B-113・B-100混合AI既定ON（Phase3/4）・belief改善（B-101/102/108）・
 #   友好/無意味手の是正（B-86'/B-103/B-109/110）・UI修正（U-5/7/8/9/10）・評価基盤（B-105/107・規約§11b）
 
@@ -1003,7 +1004,8 @@ if _app_mode.startswith("🏠"):
 
     # 最初に開くインデックス（HTML解説ページ）。ナビボタン/サイドバーで各モードへ。
     _run_guarded("🏠", lambda: render_home(
-        app_version=APP_VERSION, build_info=get_build_info(), mobile=_MOBILE))
+        app_version=APP_VERSION, build_info=get_build_info(), mobile=_MOBILE,
+        stable=_IS_STABLE))
     st.stop()
 
 if _app_mode.startswith("🎮"):

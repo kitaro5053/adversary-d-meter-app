@@ -1233,17 +1233,32 @@ def render_play(mobile: bool = False, stable: bool = False) -> None:
                 from arena.gamelog import snapshot_to_cloud_payload, split_day_tail
                 from sim.state import GameState as _GS
                 _before, _hc, _ai = split_day_tail(log, HUMAN_SEATS, _key)
+                # ★U-13（2026-08-08）：game_saves は (session_id, slot) 一意（提案書§9）＝
+                #   毎回新規INSERTだと同一セッションの2度目が必ず一意制約違反（409）で落ちていた。
+                #   既にトークンがあればその行への上書き（PATCH）で保存する。
+                _prev = st.session_state.get("play_snap_token") or ""
                 _tok = _cloud.save_snapshot(
                     snapshot_to_cloud_payload(
                         _GS.from_snapshot(_snap), mode="solo",
                         app_version=st.session_state.get("app_version", ""),
                         human_choices=_hc, ai_replay=_ai,
                         ui={"loop": _key[0], "day": _key[1]}),
-                    slot="manual")
-                st.session_state["play_snap_token"] = _tok or ""
+                    # ★U-15（2026-08-09）：slot はモード分離＝"manual_solo"（脚本家プレイ側は
+                    #   "manual_mm"）。従来は両モード共通 "manual"＝同一セッションで両方を
+                    #   手動保存すると同一行を相互上書きしていた（FableA 裁定＝分離が正。
+                    #   load は token 参照なので既存 "manual" 行・発行済みトークンは壊れない）。
+                    slot="manual_solo", token=_prev or None)
+                if _tok:
+                    st.session_state["play_snap_token"] = _tok
                 _cloud.log_event("cloud_snapshot_save", side="protagonist", ok=bool(_tok))
                 if not _tok:
-                    st.warning("クラウド保存に失敗しました（時間をおいて再度お試しください）。")
+                    # ★U-13：失敗しても既存トークンは消さない（古いトークンは保存済みの
+                    #   古い局面の復元に今も使える）。文言も実態に合わせる（409は上のtoken
+                    #   指定＋cloud.py のフォールバックで解消済み＝残る失敗は主に通信/設定）。
+                    st.warning("クラウド保存に失敗しました。通信状況をご確認のうえ、"
+                               "もう一度お試しください。")
+                elif _prev:
+                    st.info("クラウド保存を更新しました（復帰トークンは同じまま使えます）。")
             if st.session_state.get("play_snap_token"):
                 st.success(f"復帰トークン： `{st.session_state['play_snap_token']}`　"
                            "（サイドバーの『☁ 続きを復元』に貼ると、この局面から再開できます）")

@@ -337,6 +337,41 @@ LOSS_NODES = {
              "refs": ["UNREST", "REMOVAL"]},
         ], "note": "★犯人黒猫確定＝消滅（30:75）", "detector": "_threat_incident_vip",
     },
+    # ★B-153／B-157 Phase 2（2026-08-05）：事件「自殺」＝`rules/40_first_steps.md:150`
+    #   「**犯人は死亡する**」。効果側は位置で折れない（誰がどこに居ても犯人が死ぬ）＝
+    #   **折り手は犯人冷却か、犯人そのものの排除だけ**。
+    "vip.incident_suicide": {
+        "label": "自殺の犯人がVIP（KP/フレンド）本人＝発生＝敗北", "difficulty": "中", "kb": "40:150",
+        "gate": {"incidents": ["自殺"], "roles_vip": ["キーパーソン", "フレンド"]},
+        "conds": [
+            {"id": "culprit_live_critical",
+             "label": "犯人（＝VIP本人）が生存（→排除は自滅なので不可）＋不安臨界以上（→§B）",
+             "defenses": [_d("犯人＝VIP本人を不安-1で冷やして発生させない", "当日"), _tesaki()],
+             "refs": ["UNREST", "REMOVAL"]},
+        ], "note": "★効果側の折り手が原理的に無い（位置に依存しない）＝**冷却が唯一**。"
+                   "★犯人黒猫確定＝消滅（30:75）", "detector": "_threat_incident_suicide",
+    },
+    # ★B-153：従者の身代わり（`rules/30_characters.md:65` 現物カード転記 2026-07-23）＝
+    #   「同一エリアのお嬢様か大物が**死亡する場合、代わりに死亡する**」（強制・主は生存）。
+    #   ∴ 自殺の犯人がお嬢様/大物で従者が同エリアなら、死ぬのは**従者**。従者がVIPなら敗北。
+    "vip.juusha_substitute": {
+        "label": "自殺→従者が身代わりで死亡（従者がVIP）", "difficulty": "中", "kb": "30:65",
+        "gate": {"incidents": ["自殺"], "roles_vip": ["キーパーソン", "フレンド"]},
+        "conds": [
+            {"id": "culprit_live_critical",
+             "label": "犯人（お嬢様/大物）が生存＋不安臨界以上（→§B/排除）",
+             "defenses": [_d("犯人（お嬢様/大物）を不安-1で冷やして発生させない", "当日"), _tesaki()],
+             "refs": ["UNREST", "REMOVAL"]},
+            {"id": "juusha_same_area",
+             "label": "★従者が犯人（お嬢様/大物）と同エリア（＝身代わりの成立条件）",
+             "defenses": [_d("★**従者側**に移動札を置いて引き剥がす"
+                             "（主へ置くと『自身への移動を無視して一緒に移動』＝剥がせない・30:65）",
+                             "当日")],
+             "refs": []},
+        ], "note": "★★折り手の非対称＝**主を動かしても追随する**（30:65）＝動かすのは従者側。"
+                   "★友好4（20:323）で特性対象が増えると成立条件も増える。"
+                   "★犯人黒猫確定＝消滅（30:75）", "detector": "_threat_incident_suicide",
+    },
     "tt.defeat": {
         "label": "TT任意敗北（最終日・友好≤2）", "difficulty": "難", "kb": "50:128",
         "gate": {"roles": ["タイムトラベラー"]},

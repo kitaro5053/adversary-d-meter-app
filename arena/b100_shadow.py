@@ -347,6 +347,23 @@ CONFIGS: dict[str, dict] = {
     #  B-113 §5-2。緑枠が実戦に出るかの直接の答えを実対局で見る）
     "p4t09_nonl":  {"B100_MIX": True, "B100_THETA": 0.9,
                     "B100_NOPLAN_LAST": False},
+    # ------------------------------------------------------------------
+    # ★B-116（2026-07-31）＝同一負け筋×ループ横断の発火上限（s10型トレッドミルの恒久対策）。
+    #   B-114 §6-1 の検死＝θ=1.0 時代の 3日級 `random_FS` s10 は kp_sk への発火が
+    #   L2〜L8 の毎ループ続き（計14回・103点を5.5点で押し出し）敗局＝θ=0.9 は対症療法で
+    #   構造は残る（現行でも 5日級 s4 が同型＝L5〜L8 の4ループ連続・gap99・敗局）。
+    #   `B100_LINE_CAP`＝同じ負け筋ラベルが**過去の（＝敗北で終わった）ループ K 個**で
+    #   発火済みなら、そのラベルの発火資格を止める（ループ内上限 `B100_MAX_PER_LOOP` の
+    #   ループ横断版・既定 None＝OFF＝挙動 bit 不変）。
+    # ------------------------------------------------------------------
+    #: θ=1.0 の対照（旧main＝B-114 §6-1 の有害トレッドミルを再現する陽性対照）
+    "p4t10":       {"B100_MIX": True, "B100_THETA": 1.0},
+    #: 上限機構（クラス既定 θ=0.9 の上に cap だけ）
+    "lc2":         {"B100_MIX": True, "B100_LINE_CAP": 2},
+    "lc3":         {"B100_MIX": True, "B100_LINE_CAP": 3},
+    #: ★検証＝θ=1.0（構造欠陥が顕在化する世界）に cap を被せると s10 型が消えるか
+    "p4t10_lc2":   {"B100_MIX": True, "B100_THETA": 1.0, "B100_LINE_CAP": 2},
+    "p4t10_lc3":   {"B100_MIX": True, "B100_THETA": 1.0, "B100_LINE_CAP": 3},
 }
 
 #: ★Phase 1 の config は Phase 2 のクラス既定（JOINT/REQUIRE_PLAN=True）を**明示的に打ち消す**
@@ -369,7 +386,9 @@ _ATTRS = ("B100_MIX", "B100_THETA", "B100_IRON_PROB", "B100_MAX_SEATS",
           # ★Phase 3（クラスに既定が無い＝getattr の既定 False で読む属性）
           "B100_MAKE_PLAN", "B100_SELF_HARM", "B100_NOPLAN_LAST",
           # ★Phase 4（B-112）＝資格ゲートの第2軸（REPAIR_* は DP-6 で退役）
-          "B100_SUPPLY_GATE", "B100_SUPPLY_MAX", "B100_MATCH_GATED")
+          "B100_SUPPLY_GATE", "B100_SUPPLY_MAX", "B100_MATCH_GATED",
+          # ★B-116＝同一負け筋×ループ横断の発火上限（クラス既定 None＝OFF）
+          "B100_LINE_CAP")
 
 
 def _apply(cfg: dict) -> dict:
