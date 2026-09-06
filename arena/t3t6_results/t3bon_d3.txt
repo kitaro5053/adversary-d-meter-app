@@ -1,0 +1,9 @@
+arm=on bonus=20.0 days=3
+ループ数ベンチ: 140局 loops=8 days=3 PYTHONHASHSEED=0
+  平均 勝利までのループ数: 3.107（全敗9件は9として計上）
+  ★防衛可能な脚本のみ: 3.107（防衛不能0局は平均None＝FB勝負が最適な脚本）
+  結末: defense:131  fb_loss:8  loss:1
+  分布: L1:14  L2:42  L3:55  L4:15  L5:1  L6:2  L7:2  L9:9
+  脚本別平均: basic=4.0  btx_bomb=1.0  btx_contract=2.2  btx_future=3.4  btx_lovers=3.0  btx_seal=3.0  btx_seal_cat=6.9  guard=2.0  random_BTX=3.5  random_FS=2.8  revenge=3.0  shrine=2.4
+  所要 171.8秒
+RC=0

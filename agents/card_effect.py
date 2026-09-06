@@ -30,8 +30,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from engine.board import destination
+from engine.board import compose_moves, destination
 from engine.data import forbidden_of, unrest_threshold_of
+from engine.models import MOVE_CARDS
+from sim.state import current_forbidden_from_view
 
 # 主人公の移動カード（斜めは無い）。heuristic_protagonist._MOVE_TOGGLE と同一。
 MOVE_TOGGLE: dict[str, tuple[int, int]] = {"移動←→": (1, 0), "移動↑↓": (0, 1)}
@@ -111,16 +113,41 @@ def _alive(view: dict, name: str | None) -> dict | None:
 
 
 def immobile_static(name: str) -> bool:
-    """実質移動不可か（禁止エリアが3つ＝1エリアにしか居られない・A.I./ご神木等）。
+    """**静的**な実質移動不可（カード印刷の禁止エリアが3つ＝A.I./ご神木/入院患者/女の子）。
 
-    ★静的判定＝`heuristic_protagonist._immobile_of` と同一（挙動同値のため Step 0 ではこれを使う）。
-    動的解除（医者能力3で入院患者／女の子の自力解除）を織り込む判定は
-    `defense_plan._cannot_move_now` 側にある（B-21）。**両者の統一は挙動変更＝別Step**。
+    ★T1（2026-09-04）：G3/G4 の判定は本関数を使わなくなった＝`immobile_now`（公開履歴の
+      解除を織り込む・B-293 と同じ狭い述語）に置き換えた。本関数は「カード上の性質」の
+      問い合わせ用に残す（呼び出し側＝テスト／注記のみ）。
     """
     try:
         return len(forbidden_of(name) or ()) >= 3
     except Exception:  # noqa: BLE001
         return False
+
+
+def immobile_now(view: dict, name: str) -> bool:
+    """**今**（このループ・この盤面で）完全に不動か＝**どの移動札をどう合成しても現在地に留まる**。
+
+    ★T1（2026-09-04）＝脚本家側 B-293（`agents/heuristic._b293_move_is_void`）と**同じ狭い述語**：
+      - 禁止エリアは静的な `engine.data.forbidden_of` を直読みせず
+        `sim.state.current_forbidden_from_view` から取る＝医者の友好能力3（入院患者の禁止解除）／
+        女の子の友好能力1（`rules/20_goodwill_abilities.md`）で**このループ中だけ解除**されている
+        局面を「動けない」扱いしない。公開履歴 `forbidden_lifted`（`view["history"]`・
+        `view["loop"]` 一致分のみ）から再構成する＝神視点にならない。
+      - 「不動」＝移動札3種（`engine.models.MOVE_CARDS`）の各行き先（`engine.board` の合成）が
+        **すべて**禁止＝現在地以外の3エリアが全部禁止。合成の結果は必ずこの3エリアか現在地の
+        いずれか（2×2盤・XOR）なので、これは `rules/60` A-2（合成してから禁止判定1回）の下で
+        **KB が一意に決める**空振り。
+      - 対象が盤上に居ない（`area` None＝未登場／死体）＝材料が無い＝**False（言えない側）**。
+    """
+    c = _char(view, name)
+    area = (c or {}).get("area")
+    if not area:
+        return False
+    forb = current_forbidden_from_view(view, name)
+    if not forb:
+        return False
+    return all(destination(area, compose_moves([mc])) in forb for mc in MOVE_CARDS)
 
 
 def move_dest(src: str | None, card: str) -> str | None:
@@ -263,7 +290,8 @@ def noop_reason(view: dict, card: str, target: str, target_kind: str,
 
     # --- G3：移動禁止は「そのキャラに載った今ターンの移動カード」しか打ち消せない ---
     if card == "移動禁止":
-        if immobile_static(target):
+        # ★T1：静的 `immobile_static` → `immobile_now`（当ループの解除を織り込む・B-293 と同型）。
+        if immobile_now(view, target):
             return Noop("対象が実質移動不可＝打ち消す移動が無い（空振り）", NOOP_SCORE)
         return None
 
@@ -272,7 +300,12 @@ def noop_reason(view: dict, card: str, target: str, target_kind: str,
         c = _alive(view, target)
         dest = move_dest(c["area"] if c else None, card)
         # G4：行き先が禁止＝移動は不成立（その場に留まる）＝空振り
-        if dest is None or dest in forbidden_of(target):
+        # ★T1-lite（2026-09-04）：禁止エリアの**取得元だけ**を当ループの解除を織り込んだ公開情報版
+        #   （`sim.state.current_forbidden_from_view`）に替えた。述語（「自札の行き先が禁止なら空振り」）
+        #   は従来のまま＝mm札の有無で分岐しない。※`rules/60` A-2（合成後に禁止判定1回）に照らした
+        #   狭化（mm札あり→None）は lane/t1-prot-forbidden 2a17c15c に分離＝T1b で別途設計
+        #   （ベンチ検死で同点帯の列挙順と `_relocate_breaks` の折り手復活に副作用が出たため）。
+        if dest is None or dest in current_forbidden_from_view(view, target):
             return Noop("行き先が禁止エリア＝移動不成立（空振り）", NOOP_SCORE)
         # G5：致死事件の kill zone へ KP を動かさない（クロマク等の移動は正当用途があるのでKP限定）
         if ctx.kill_zone is not None and dest == ctx.kill_zone \

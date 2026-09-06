@@ -28,6 +28,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from agents.card_effect import NoopCtx, noop_reason
+# ★T5（2026-09-04）：禁止エリアの取得元＝`sim.state.current_forbidden_from_view`（公開情報版の
+#   単一ソース）。静的 `engine.data.forbidden_of` の直読みは本モジュールから消した＝当ループの解除
+#   （医者♡3＝入院患者／女の子♡1）を織り込む。B-293（mm側）／T1（card_effect）と同じ取得元。
+from sim.state import current_forbidden_from_view
 from engine.data import (SHOUJO, UNREFUSABLE_ABILITY_CHARS, ability_kind,
                          goodwill_abilities_of, initial_area_of, is_student,
                          role_has_friendship_ignore, unrest_threshold_of)
@@ -159,23 +163,21 @@ def _char(view: dict, name: str) -> dict | None:
     return None
 
 
-def _immobile(name: str) -> bool:
-    """そのキャラが実質移動不可か（禁止エリアが3つ＝1エリアにしか居られない・A.I.等）。
-    移動/移動禁止を提示・加点しても無駄になる（テスター指摘 2026-07-10）。"""
+def _immobile(view: dict | None, name: str) -> bool:
+    """そのキャラが**今**（このループ）実質移動不可か＝**現在の**禁止エリアが3つ
+    （1エリアにしか居られない・A.I.等）。移動/移動禁止を提示・加点しても無駄になる
+    （テスター指摘 2026-07-10）。
+
+    ★T5（2026-09-04）：旧 `_immobile(name)`（静的 `forbidden_of` 直読み）と旧 `_cannot_move_now`
+      （静的＋当ループ解除の別実装 `_lifted_this_loop`）の**二重実装を1つに**した。取得元は
+      `sim.state.current_forbidden_from_view`（公開履歴 `forbidden_lifted`・`view["loop"]` 一致分のみ）
+      ＝B-21 の区別（恒久移動不能＝A.I./ご神木 vs 条件付き＝入院患者・女の子）はこの取得元が
+      そのまま表す。`view=None` は解除を見ない（静的値と同じ）＝従来どおり。
+    """
     try:
-        from engine.data import forbidden_of
-        return len(forbidden_of(name) or ()) >= 3
+        return len(current_forbidden_from_view(view or {}, name)) >= 3
     except Exception:
         return False
-
-
-def _lifted_this_loop(view: dict, name: str) -> bool:
-    """医者能力3（入院患者）／女の子の友好1能力で、当ループ中に禁止エリアが解除されたか
-    （公開履歴 forbidden_lifted・KB:20/30）。forbidden_lifted は『このループ中』＝ループ毎に
-    リセットされる＝当ループ（view['loop']）のイベントだけ数える。"""
-    loop = view.get("loop")
-    return any(e.get("event") == "forbidden_lifted" and e.get("name") == name
-               and e.get("loop") == loop for e in view.get("history", ()))
 
 
 def _cannot_move_now(view: dict, name: str) -> bool:
@@ -183,10 +185,9 @@ def _cannot_move_now(view: dict, name: str) -> bool:
     確実に空振りになる。★恒久移動不能（A.I./ご神木＝FS/BTXに移動解放能力なし）と、
     条件付き移動不能（入院患者＝医者能力3で解除／女の子＝自身の友好1能力で解除）を区別する
     （ユーザー知見 2026-07-15：女の子・入院患者は移動できるようになることがある）：条件付きは
-    『当ループ中に解除済み』なら動ける＝移動禁止の対象価値が戻るので False（＝ゲートしない）。"""
-    if not _immobile(name):
-        return False
-    return not _lifted_this_loop(view, name)
+    『当ループ中に解除済み』なら動ける＝移動禁止の対象価値が戻るので False（＝ゲートしない）。
+    ★T5：実体は `_immobile(view, name)`（単一ソース）。名前は利用側（B-21b／SK ピン）のため残す。"""
+    return _immobile(view, name)
 
 
 def _relocate_breaks(opts, name: str, area: str, label_fmt: str,
@@ -204,7 +205,7 @@ def _relocate_breaks(opts, name: str, area: str, label_fmt: str,
     ★2c（roles も渡すと G5/G6＝退避先の安全も見る）：致死zoneへのKP退避・キラー+VIP同居への
       クロマク送り込みを折り手にしない＝「安全な退避だけ提示」。
     """
-    if _immobile(name):
+    if _immobile(view, name):
         return []
     out = []
     for mc in opts.move_cards_for(name):          # 通常のキャラ移動
@@ -248,10 +249,12 @@ _MM_SET_PER_TURN = 3          # 脚本家が1ターンにセットする枚数�
 _PROT_MOVE_TOGGLE = {"移動←→": (1, 0), "移動↑↓": (0, 1)}
 
 
-def _forbidden_areas(name: str) -> frozenset:
+def _forbidden_areas(view: dict, name: str) -> frozenset:
+    """`name` の**現在の**禁止エリア（★T5：`current_forbidden_from_view` の薄い包み＝当ループの解除を
+    織り込む。旧実装は静的 `forbidden_of` 直読み＝女の子♡1 解除中でも『神社に届かない』と誤判定し、
+    `_pair_possible` が偽になって SK ピンを『堅』と過大評価していた＝T2 検死 `random_FS#15` L2D4）。"""
     try:
-        from engine.data import forbidden_of
-        return frozenset(forbidden_of(name) or ())
+        return frozenset(current_forbidden_from_view(view, name))
     except Exception:
         return frozenset()
 
@@ -272,7 +275,7 @@ def _own_move_dest(view: dict, name: str, card: str) -> str | None:
         dest = destination(cur, t)
     except Exception:
         return None
-    return cur if dest in _forbidden_areas(name) else dest
+    return cur if dest in _forbidden_areas(view, name) else dest
 
 
 def _mm_movers(view: dict) -> set:
@@ -293,16 +296,16 @@ def _can_reach(view: dict, name: str, area: str, movers: set) -> int | None:
         return None
     if c["area"] == area:
         return 0
-    if name not in movers or _immobile(name) or area in _forbidden_areas(name):
+    if name not in movers or _immobile(view, name) or area in _forbidden_areas(view, name):
         return None
     return 1
 
 
 def _can_leave(view: dict, name: str, area: str, movers: set) -> bool:
     """name を area から追い出せるか（行き先が1つでも禁止でなければ可）。"""
-    if name not in movers or _immobile(name):
+    if name not in movers or _immobile(view, name):
         return False
-    forb = _forbidden_areas(name)
+    forb = _forbidden_areas(view, name)
     return any(a != area and a not in forb for a in _AREAS)
 
 
@@ -1488,7 +1491,7 @@ def _threat_board_defeat(view, roles, opts, supply_rumor,
             # ★B-1（2026-07-13）：移動可のクロマクが的に居る＝「防御不能」ではなくレース。
             #   今ターン移動札が無くても、移動で剥がせば止まる供給＝別席/別ターンで対処できる
             #   （真の防御不能＝移動不可クロマク・不穏な噂・黒猫と区別する）。
-            movable = [cu for cu in cultists_here if not _immobile(cu)]
+            movable = [cu for cu in cultists_here if not _immobile(view, cu)]
             if movable:
                 race = True
                 if not c1.breaks:

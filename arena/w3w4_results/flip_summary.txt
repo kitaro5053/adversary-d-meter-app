@@ -1,0 +1,5 @@
+[w3 d3] 集計一致=True  per-game flip=0  rows bit一致=True
+[w3 d5] 集計一致=False  per-game flip=1  rows bit一致=False
+    ('random_BTX', 11) OFF: {'loops_to_win': 4, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'}
+[w4 d3] 集計一致=True  per-game flip=0  rows bit一致=True
+[w4 d5] 集計一致=True  per-game flip=0  rows bit一致=True

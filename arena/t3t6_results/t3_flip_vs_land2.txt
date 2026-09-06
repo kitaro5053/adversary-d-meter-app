@@ -1,0 +1,4 @@
+[t3 d3] 集計一致=True  per-game flip=0  rows bit一致=True
+[t3 d5] 集計一致=True  per-game flip=0  rows bit一致=True
+[t3bon d3] 集計一致=True  per-game flip=0  rows bit一致=True
+[t3bon d5] 集計一致=True  per-game flip=0  rows bit一致=True

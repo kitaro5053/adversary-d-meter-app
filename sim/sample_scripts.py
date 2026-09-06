@@ -178,6 +178,47 @@ def btx_lovers_script() -> Script:
     )
 
 
+def btx_seal_cat_script() -> Script:
+    """BTX：封印されしモノ（神社暗躍≥2で敗北）× 妄想拡大ウイルス × 不定因子χ。★黒猫入り。
+
+    ★B-254（2026-08-18・ユーザー承認「コーパス追加OK」）で**追加**した脚本
+    （既存の `btx_seal`＝入院患者版は**差し替えずそのまま残す**）。
+
+    追加の理由＝`btx_seal` は 2026-07-08 に「黒猫→入院患者」へ差し替えられた（上の
+    docstring 参照）。その是正は正しかった（当時の組み合わせは詰みソルバで mastermind）が、
+    副作用として**「敗北ボード＝神社に、暗躍禁止では止まらない供給がある封印」型が
+    コーパスから構造的に消えていた**。ユーザーが実戦で組んだのはまさにその型
+    （黒猫のループ開始強制+1〔神社〕＋クロマク＋神社常駐のご神木）で、AI は5ループ連続で
+    敗れている（`docs/feedback_logs/封印されしモノ_BTX3d_seed3_2026-08-18.jsonl`／
+    バックログ §72-50・§72-52）。∴ **この型の弱点はベンチで一度も顕在化しなかった**。
+
+    脚本はユーザーの実戦ログ（seed3）を**そのまま**再現したもの（改変なし）。
+    健全性＝`solve_script` は `protagonist`（`exact_days=1` / `2` の両方で確認・B-254 実測）、
+    `loop_race.analyze_script` も `protagonist`＝NG脚本ではない（＝敗北は AI 側の失敗）。
+
+    2026-07-08 の是正対象との違い（なぜ今度は詰まないか）：
+    - ルールX が「不穏な噂」ではなく `妄想拡大ウイルス`＋`不定因子χ`＝**フリーの
+      止まらない神社+1 が無い**（当時 mastermind になった4系統目の供給がここに無い）。
+    - キャストが6人＝クロマク（男子学生・都市初期）は神社へ運ぶ手数が要る。
+    ∴ 供給は「黒猫のループ開始+1（止められない）＋暗躍カード（暗躍禁止で止まる）」で、
+    主人公3席が届く範囲に収まる。
+    """
+    return Script(
+        set_name="BTX",
+        rule_y="封印されしモノ",
+        rule_x="妄想拡大ウイルス",
+        rule_x2="不定因子χ",
+        loops=3,
+        days_per_loop=3,
+        cast=["転校生", "ご神木", "巫女", "黒猫", "男子学生", "妹"],
+        roles={"男子学生": "クロマク", "転校生": "カルティスト",
+               "妹": "ミスリーダー", "ご神木": "ファクター"},
+        incidents=[Incident(day=1, name="邪気の汚染", culprit="男子学生"),
+                   Incident(day=3, name="流布", culprit="黒猫")],
+        entry_days={"転校生": 3},
+    )
+
+
 # --- 5日級（4ループ×5日＝スタンダード形式。ユーザー方針 2026-07-08） ---
 
 def fs5_guard_script() -> Script:
@@ -236,13 +277,67 @@ def btx5_future_script() -> Script:
     )
 
 
+def btx5_seal_cat_script() -> Script:
+    """BTX 5日級：封印されしモノ（神社暗躍≥2で敗北）× 妄想拡大ウイルス × 不定因子χ。★黒猫入り。
+
+    ★B-257（2026-08-19・ユーザー裁定「5日btx5_sealcat作っておきましょう」）で**追加**した脚本。
+    3日級 `btx_seal_cat`（B-254）の5日級版＝**暗躍禁止では原理的に止められない神社供給を
+    持つ封印**という型を、5日級コーパスにも入れる（3日級だけの現象ではないかを測るため）。
+
+    構成の出どころ（手本）：
+    - ルール・配役・事件の型は `btx_seal_cat`（＝ユーザーの実戦脚本）をそのまま5日級へ写した。
+      第2事件は3日級版と同じく**最終日の 流布/黒猫**（黒猫特性2で効果は「何も起きない」＝
+      盤面は動かない複線演出）。第2事件を4日目へ置いた版も実測したが、
+      **ご神木の有無に関係なく10局全敗**になり測定装置としての分解能が消えたため採らない。
+    - 日数・ループ数・キャスト7人は `btx5_seal`（既存の5日級封印）に合わせた。
+
+    ★**ご神木（神社から動けない常駐者）は入れた**。実測（同一ツリー・`PYTHONHASHSEED=0`・
+    10 seed・他は完全同一）：
+    - ご神木あり（本脚本）＝**防衛 3/10・平均 7.40**
+    - ご神木を外し ファクターを女子学生（学校）へ＝**防衛 8/10・平均 3.40**
+    - ご神木を外し ファクターを巫女（神社にいるが動ける）へ＝**防衛 8/10・平均 3.40**
+    ∴ ★**「敗北ボードから動けない常駐者」が居るかどうかだけで防衛が 8→3 に落ちる**
+    ＝バックログ §72-50／B-251・B-255 の仮説（常駐者が黒幕の疑いを吸い、隔離／剥がし／
+    ピンが NOOP になる）に対する、脚本レベルの直接の証拠。**測る価値があるので入れる**。
+
+    ★対照（黒猫だけを入院患者に替え、他は同一にした版）＝**防衛 6/10・平均 6.00**で、
+    守れなかった4局は**すべて `fb_win`**（最後の戦いには勝つ）。本脚本（黒猫あり）は
+    **防衛 3/10・平均 7.40**で、守れなかった7局は**すべて `fb_loss`**。
+    ＝止まらない神社+1 は「防衛を落とす」だけでなく**推理そのもの（＝最後の戦い）を壊している**。
+
+    健全性＝`solve_script` は `protagonist`（`exact_days=1`＝16.5秒 / `exact_days=2`＝3775.7秒 の
+    両方で確認・B-257 実測。`use_cache=False`）、
+    `loop_race.analyze_script` も `protagonist`＝NG脚本ではない（＝敗北は AI 側の失敗）。
+    """
+    return Script(
+        set_name="BTX",
+        rule_y="封印されしモノ",
+        rule_x="妄想拡大ウイルス",
+        rule_x2="不定因子χ",
+        loops=4,
+        days_per_loop=5,
+        cast=["転校生", "ご神木", "巫女", "黒猫", "男子学生", "妹", "医者"],
+        roles={"男子学生": "クロマク", "転校生": "カルティスト",
+               "妹": "ミスリーダー", "ご神木": "ファクター"},
+        incidents=[Incident(day=1, name="邪気の汚染", culprit="男子学生"),
+                   Incident(day=5, name="流布", culprit="黒猫")],
+        entry_days={"転校生": 3},
+    )
+
+
 BTX_SAMPLE_SCRIPTS = {
     "btx_seal": btx_seal_script, "btx_future": btx_future_script,
     "btx_bomb": btx_bomb_script, "btx_contract": btx_contract_script,
-    "btx_lovers": btx_lovers_script,
+    "btx_lovers": btx_lovers_script, "btx_seal_cat": btx_seal_cat_script,
+    "btx5_seal_cat": btx5_seal_cat_script,
 }
 
-# 全サンプル（FS 4 ＋ BTX 5 ＋ 5日級 3）。runner/viewer/play で共用。
+# 全サンプル（FS 4 ＋ BTX 6 ＋ 5日級 3）。runner/viewer/play で共用。
+# ★並び順は測定装置の一部：3日級サンプルは benchmark_scripts() の先頭 N×10 局になる。
+#   B-254 の追加分（btx_seal_cat）は**3日級グループの末尾**に置く＝既存9本の (name, seed)
+#   の並び（インデックス0〜89）を1つも動かさない（新旧の比較可能性を最大限残すため）。
+#   B-257 の追加分（btx5_seal_cat）も同じ作法で**辞書の末尾**＝5日級グループの末尾に置く
+#   （5日級の既存3本×10 seed＝インデックス0〜29 は不変。ランダム40局が30〜69→40〜79へずれる）。
 SAMPLE_SCRIPTS = {
     "basic": basic_script,
     "guard": guard_script,
@@ -253,7 +348,9 @@ SAMPLE_SCRIPTS = {
     "btx_bomb": btx_bomb_script,
     "btx_contract": btx_contract_script,
     "btx_lovers": btx_lovers_script,
+    "btx_seal_cat": btx_seal_cat_script,
     "fs5_guard": fs5_guard_script,
     "btx5_seal": btx5_seal_script,
     "btx5_future": btx5_future_script,
+    "btx5_seal_cat": btx5_seal_cat_script,
 }

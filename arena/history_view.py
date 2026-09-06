@@ -41,7 +41,8 @@ _SHOWN = {"loop_start", "cards_revealed", "move_blocked", "death", "protagonist_
           "death_prevented", "protagonist_death_prevented", "protagonist_immortal",
           "guard_consumed", "revive", "goodwill_used", "goodwill_refused",
           "goodwill_resolved", "incident", "incident_effect",
-          "role_reveal", "culprit_reveal", "loop_end", "loop_result", "final_battle",
+          "role_reveal", "culprit_reveal", "rule_reveal",
+          "loop_end", "loop_result", "final_battle",
           "entry", "scholar_trait", "goshinboku_move"}
 
 
@@ -85,7 +86,11 @@ def describe_event_emoji(e: dict) -> str:
     if ev == "goodwill_used":
         who, ab = e.get("character", ""), e.get("ability", "")
         tgt = e.get("target", "")
-        return f"💚 {who} が友好能力『{ab}』" + (f" → {tgt}" if tgt else "")
+        # ★B-278：医者『不安操作（除去/付与）』は [主] の宣言に除去/付与が含まれる（KB 20:228）＝
+        #   拒否より前の公開情報なので経過にも出す。
+        _md = {"remove": "除去", "add": "付与"}.get(e.get("mode"))
+        return (f"💚 {who} が友好能力『{ab}』" + (f" → {tgt}" if tgt else "")
+                + (f"（宣言：不安を1つ{_md}）" if _md else ""))
     if ev == "goodwill_refused":
         # A-13：拒否は役職推理の一次公開情報（拒否できる＝友好無視系の役職の証拠）。
         return f"　└ ✗ 脚本家が拒否（{e.get('character', '')}は友好無視系の役職＝拒否できる）"
@@ -100,6 +105,11 @@ def describe_event_emoji(e: dict) -> str:
         return f"🔓 {nm}＝{e.get('role', '')} が判明"
     if ev == "culprit_reveal":
         return f"🕵 {e.get('day')}日目の事件の犯人＝{nm} が判明"
+    if ev == "rule_reveal":
+        # ★B-29x（2026-09-02・トリアージ A-2(b)）：情報屋の友好能力でルールXが1つ開示される
+        #   （KB: 20:176）。履歴には載っていたのに**両モードの経過に出ていなかった**（実バグ）。
+        #   出すのは「開示された名前」だけ＝脚本の真実のうち**公開された分**（他の秘匿は漏らさない）。
+        return f"📜 ルールXの一つ＝{e.get('rule_x', '')} が判明"
     if ev == "loop_end":
         # ★A-26：即時終了（ループ終了効果の成立＝KP/主人公死亡・TT任意敗北等）。原因のキャラ名・
         #   役職・条件名は絶対に出さない（reason は神視点＝同時複数死亡時にKP特定情報が漏れる）。

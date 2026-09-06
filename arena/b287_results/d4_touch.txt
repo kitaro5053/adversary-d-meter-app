@@ -1,0 +1,12 @@
+[4日級 perm=id] 伏せ札列が変わった局 7/40（不変 33）
+  最初の食い違いが起きたループ番号の分布: {2: 3, 3: 4}
+  触れた局: random_FS#8  random_FS#17  random_BTX#1  random_BTX#4  random_BTX#5  random_BTX#6  random_BTX#8
+[4日級 perm=rev] 伏せ札列が変わった局 9/40（不変 31）
+  最初の食い違いが起きたループ番号の分布: {2: 5, 3: 4}
+  触れた局: random_FS#3  random_FS#9  random_FS#12  random_FS#17  random_BTX#1  random_BTX#3  random_BTX#4  random_BTX#6  random_BTX#8
+[4日級 perm=h1] 伏せ札列が変わった局 8/40（不変 32）
+  最初の食い違いが起きたループ番号の分布: {2: 5, 3: 3}
+  触れた局: random_FS#3  random_FS#12  random_FS#17  random_BTX#1  random_BTX#3  random_BTX#4  random_BTX#6  random_BTX#8
+[4日級 perm=rot1] 伏せ札列が変わった局 7/40（不変 33）
+  最初の食い違いが起きたループ番号の分布: {2: 3, 3: 4}
+  触れた局: random_FS#8  random_FS#17  random_BTX#1  random_BTX#4  random_BTX#5  random_BTX#6  random_BTX#8

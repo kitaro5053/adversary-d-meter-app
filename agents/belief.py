@@ -16,7 +16,7 @@
 観測フィルタ:
 - role_reveal（フレンド公開・サラリーマン等の開示）→ 役職確定。
 - キーパーソン死亡（死亡直後にループ終了効果）→ その死者はキーパーソン。
-- rule_reveal（情報屋のルールX開示）→ rule_x 確定。
+- rule_reveal（情報屋のルールX開示）→ 開示された名前を含む組だけ残す（複数件なら全件＝T3）。
 - 敗北条件（守るべき場所＝学校暗躍<2の盤面敗北）→ ルールY消去。
 - 犯人候補：発生回で先に死んだ者は除外／犯人開示で確定。
 """
@@ -32,6 +32,7 @@ from math import factorial
 from engine.data import (
     ROLE_CLAUSE_ABILITY,
     UNREFUSABLE_ABILITY_CHARS,
+    initial_area_of,
     is_shoujo,
 )
 
@@ -297,10 +298,23 @@ def _revealed_roles(history: list[dict]) -> dict[str, str]:
 
 
 def _revealed_rule_x(history: list[dict]) -> str | None:
+    """最初に開示されたルールX 1件（互換用。推理は `_revealed_rule_xs` を使う）。"""
     for e in history:
         if e.get("event") == "rule_reveal" and e.get("rule_x"):
             return e["rule_x"]
     return None
+
+
+def _revealed_rule_xs(history: list[dict]) -> frozenset[str]:
+    """公開履歴で開示された**全て**のルールX名（重複は1つに畳む）。
+
+    ★T3（2026-09-05・B-29x レビュー §5-3）：情報屋の友好能力（KB: 20:176＝「脚本のルールXのうち
+      宣言名でないもの1つを伝える」）はループをまたいで複数回使えるため、BTX（ルールX 2つ）では
+      **2件とも開示されうる**。以前は最初の1件だけを推理に使っていた＝2件目が捨てられていた。
+      開示された名前は必ず脚本のルールX（KB が一意に決める事実）＝全件を絞り込みに使うのが健全。
+    """
+    return frozenset(e["rule_x"] for e in history
+                     if e.get("event") == "rule_reveal" and e.get("rule_x"))
 
 
 def _death_day(history: list[dict]) -> dict[tuple, int]:
@@ -471,7 +485,9 @@ def _public_role_constraints(history: list[dict], cast=()) -> tuple[set | None, 
                 s_k = s | _relax
                 kuro = s_k if kuro is None else (kuro & s_k)
         elif e.get("event") == "unrest":
-            if "医者" in s and doc_live[_i]:  # 医者能力が実際に使えた＝曖昧（B-25）
+            if "医者" in s and _doctor_source_possible(e, doc_live[_i]):
+                # 医者能力が実際に使えた＝曖昧（B-25）。★B-243（既定OFF）＝対象が医者自身
+                #   なら医者起源は不可能（rules/20:228,297）＝曖昧にしない。
                 continue
             s_ml = s | _relax                # B-30：大物はテリトリーから遠隔で不安+1しうる
             ml = s_ml if ml is None else (ml & s_ml)
@@ -594,7 +610,7 @@ def _ml_strict(history: list[dict], cast=()) -> set | None:
         if present is None:
             continue
         s = set(present)
-        if "医者" in s and doc_live[_i]:
+        if "医者" in s and _doctor_source_possible(e, doc_live[_i]):
             continue                      # 医者の友好能力がありえた＝曖昧（B-25と同基準）
         if fa_live[_i]:
             continue                      # 学校暗躍≥2＝ファクター起源もありえた＝ML専用でない
@@ -627,7 +643,7 @@ def _ml_forced(history: list[dict], cast=()) -> set:
         if present is None:
             continue
         s = set(present)
-        if ("医者" in s and doc_live[_i]) or len(s) != 1:
+        if ("医者" in s and _doctor_source_possible(e, doc_live[_i])) or len(s) != 1:
             continue
         forced |= s          # 単独present＝その1人が不安源＝ML or ファクター確定
     return forced
@@ -702,17 +718,12 @@ def _mm_board_supply_candidates(e: dict, cast=()) -> set:
 B188_CONTRACT_SHOUJO_ELIM: bool = True
 
 
-def _clean_defeat_constraints(history: list[dict]) -> tuple[list[set], bool]:
-    """評価敗北（ループ終了時判定で敗北）ごとの「ありうるルールY」集合と、
-    「死者なしのループ終了効果」＝タイムトラベラー必在フラグ。
+def _defeat_loop_classes(history: list[dict]) -> dict:
+    """ループ単位の敗北分類（`_clean_defeat_constraints` と `_board_x_evidence` の**単一ソース**）。
 
-    敗北には必ず原因がある。ループ終了時の評価で成立しうる敗北は
-    (a) ルールYの盤面条件 (b) フレンド死亡 の2系統のみで、(b)は【強制】役職公開を伴う
-    （60:A17）。よって「効果終了でも主人公死亡でもフレンド公開でもない敗北」の原因は
-    ルールY条件＝観測された盤面がその条件を満たすルールYだけが生き残る。
-    ★キャラの死そのものは曖昧化しない（KP死は効果終了・フレンド死は公開で検出できる）。
-    ★ただし役職公開は一度きり＝**既公開フレンドの死**は新たな公開を出さない
-    → 既知フレンドが死んだループも敗北原因の帰責に使わない（過剰消去の実測バグ）。
+    ★B-243 で `_clean_defeat_constraints` の前半をそのまま切り出したもの（挙動は bit 不変）。
+    2つの推論が「どのループの敗北を盤面に帰責してよいか」の判定を共有するために分けている
+    （片方だけ条件が変わるとハード制約の健全性が崩れる＝ドリフト防止）。
     """
     loop_board: dict[int, dict] = {}
     loop_char_anr: dict[int, dict] = {}
@@ -751,6 +762,33 @@ def _clean_defeat_constraints(history: list[dict]) -> tuple[list[set], bool]:
     for lp, names in death_names_by_loop.items():
         if names & revealed_friends:
             dirty_loops.add(lp)
+    return {"loop_board": loop_board, "loop_char_anr": loop_char_anr,
+            "defeat_loops": defeat_loops, "dirty_loops": dirty_loops,
+            "effect_end_loops": effect_end_loops, "effect_end_days": effect_end_days,
+            "death_days": death_days, "butterfly_loops": butterfly_loops}
+
+
+def _clean_defeat_constraints(history: list[dict]) -> tuple[list[set], bool]:
+    """評価敗北（ループ終了時判定で敗北）ごとの「ありうるルールY」集合と、
+    「死者なしのループ終了効果」＝タイムトラベラー必在フラグ。
+
+    敗北には必ず原因がある。ループ終了時の評価で成立しうる敗北は
+    (a) ルールYの盤面条件 (b) フレンド死亡 の2系統のみで、(b)は【強制】役職公開を伴う
+    （60:A17）。よって「効果終了でも主人公死亡でもフレンド公開でもない敗北」の原因は
+    ルールY条件＝観測された盤面がその条件を満たすルールYだけが生き残る。
+    ★キャラの死そのものは曖昧化しない（KP死は効果終了・フレンド死は公開で検出できる）。
+    ★ただし役職公開は一度きり＝**既公開フレンドの死**は新たな公開を出さない
+    → 既知フレンドが死んだループも敗北原因の帰責に使わない（過剰消去の実測バグ）。
+    """
+    cls = _defeat_loop_classes(history)
+    loop_board = cls["loop_board"]
+    loop_char_anr = cls["loop_char_anr"]
+    defeat_loops = cls["defeat_loops"]
+    dirty_loops = cls["dirty_loops"]
+    effect_end_loops = cls["effect_end_loops"]
+    effect_end_days = cls["effect_end_days"]
+    death_days = cls["death_days"]
+    butterfly_loops = cls["butterfly_loops"]
 
     # 宣言"当日"死者ゼロの「ループ終了効果」＝TT の任意敗北しかない（KP死亡のループ終了
     # 効果は必ず同日に死者を伴う。ループ単位の死者ゼロ判定だとSKが序盤に殺すループで
@@ -785,6 +823,93 @@ def _clean_defeat_constraints(history: list[dict]) -> tuple[list[set], bool]:
             allowed.add("未来改変プラン")
         allowed_sets.append(allowed)
     return allowed_sets, tt_required
+
+
+#: ★B-243（2026-08-17・ユーザー実戦フィードバック §指摘1）の切替口＝**既定 OFF**
+#:   （導入前と bit-for-bit 同一）。
+#:   KB＝**ボードX は特定役職の初期エリアに等しい**：
+#:     - `rules/50_basic_tragedy_x.md:52`＝巨大時限爆弾Xの存在(Y) の X＝**ウィッチ**の初期エリア
+#:     - `rules/40_first_steps.md:42`＝復讐者の灯火(Y) の X＝**クロマク**の初期エリア
+#:   ＋ `rules/60_faq_rulings.md:112-114`（C-7）＝ボードに配置されていなくても脚本上存在すれば
+#:      ボードXは定まる＝**初期エリア表（`engine.data.CHARACTER_INITIAL_AREA`）が一意に決める量**。
+#:   ∴ 「クリーン評価敗北（＝`_clean_defeat_constraints` が盤面に帰責してよいと判定した敗北）」
+#:   が観測されたら、そのルール組（rule_y が上の2つ）では **ボードX ∈ {そのループ終了時に
+#:   暗躍≥2 だったボード}**。複数ループぶんは ∩ で絞る。
+#:   ⇒ **その役職の担い手は「初期エリアが候補ボードに入るキャラ」に限られる**。
+#:   ★これは既存の消去法（`_clean_defeat_constraints` が同じ敗北から
+#:     「巨大時限爆弾X/復讐者の灯火 はありうる」と結論している）の**証人を捨てずに使う**だけ＝
+#:     新しい仮定を足していない（既存推論が健全なら本推論も健全）。
+#:   健全側の緩和：
+#:     - 初期エリアが **None**（手先・従者＝ループ毎に脚本家が指定）のキャラは常に候補に残す
+#:       （→60 A11＝手先がウィッチならボードXはループ毎に変わる）。
+#:     - その役職のスロットが**2以上**の組（イレギュラーの枠外役職で2体になりうる）は
+#:       **KB がどちらの初期エリアを X とするか決めない＝要確認**なので制約を適用しない。
+B243_BOARD_X_ROLE: bool = False
+
+#: ボードXを定める役職（`sim/state.py:511` と同じ対応表・KB は上の docstring 参照）。
+_BOARD_X_ROLE_BY_RULE_Y: dict[str, str] = {
+    "復讐者の灯火": "クロマク",
+    "巨大時限爆弾Xの存在": "ウィッチ",
+}
+
+
+def _board_x_evidence(history: list[dict]) -> frozenset | None:
+    """クリーン評価敗北から絞った **ボードX の候補ボード集合**（None＝証拠なし＝制約なし）。
+
+    `_clean_defeat_constraints` と同じ分類（`_defeat_loop_classes`）を使う＝
+    「盤面に帰責してよい敗北」の定義は単一ソース。
+    ★負方向（生き延びたループ＝ボードX<2）は実装しない：主人公はループを1つ守れば
+      その場でゲームが終わる（`sim/effects.py:694-698`＝`game_over`）＝観測時点として
+      価値がない（推論が働くべき局面がもう無い）。
+    """
+    cls = _defeat_loop_classes(history)
+    loop_board = cls["loop_board"]
+    pos: set | None = None
+    for lp in sorted(cls["defeat_loops"]):
+        if lp in cls["dirty_loops"] or lp in cls["effect_end_loops"]:
+            continue                       # 死亡・効果終了が絡む敗北は盤面に帰責しない
+        board = loop_board.get(lp)
+        if board is None:
+            continue
+        hot = {b for b, v in board.items() if v >= 2}
+        if not hot:
+            continue                       # このループの敗北は盤面ルールYでは説明されない
+        pos = set(hot) if pos is None else (pos & hot)
+    return frozenset(pos) if pos is not None else None
+
+
+def _board_x_role_candidates(cast, boards: frozenset) -> frozenset:
+    """ボードX候補 `boards` と初期エリア表から、ボードX役職の担い手候補を返す。"""
+    out = set()
+    for c in cast:
+        area = initial_area_of(c)
+        if area is None or area in boards:   # None＝手先/従者＝ループ毎指定＝絞れない
+            out.add(c)
+    return frozenset(out)
+
+
+#: ★B-243（ユーザー実戦フィードバック §指摘3 の周辺）の切替口2＝**既定 OFF**。
+#:   KB＝`rules/20_goodwill_abilities.md:228`「医者と同一エリアにいる**他のキャラ1人**を選び」
+#:   ／`:297`「同一エリアの**自身以外**から不安1除去 or 不安1付与」（現物確認済）＝
+#:   **医者の友好能力は医者自身に不安を置けない**（`sim/legal.py:186` も `n != "医者"` で一致）。
+#:   ∴ 脚本家能力フェイズの不安イベントの **対象が医者自身** なら、その不安は医者起源では
+#:   ありえず、**ミスリーダー／ファクター起源に確定**する＝present 制約をハードに使ってよい。
+#:   現行は「医者が present に居て友好2以上」だけで曖昧扱いにして事象を丸ごと捨てており
+#:   （`_doctor_ability_live` 系の3経路）、教材では **mm能力フェイズの不安8件中6件**が
+#:   この理由で破棄されていた（対象は全件『医者』）。KB が一意に決める**可否**の取り違え。
+B243_DOCTOR_SELF_TARGET: bool = True   # ★既定 ON（2026-08-17・ユーザー裁定「医者の件既定onで良いよ」）
+#   ＝KB `rules/20_goodwill_abilities.md:228,297`「同一エリアの**自身以外**」を belief が
+#   使っておらず、医者を対象にした不安の観測を「医者自身の友好能力かも」として捨てていた漏れの是正。
+#   健全性違反0（3日級1037時点・5日級716時点）／6条件すべてで per-game 退行ゼロ／5日級 68→69。§72-44。
+
+
+def _doctor_source_possible(e: dict, live: bool) -> bool:
+    """この mm能力フェイズの不安イベントを『医者の友好能力起源でありうる』と見るか。"""
+    if not live:
+        return False
+    if B243_DOCTOR_SELF_TARGET and e.get("target") == "医者":
+        return False       # 医者は自分自身を対象に取れない（rules/20:228,297）
+    return True
 
 
 def _turn_end_death_constraints(
@@ -1349,7 +1474,7 @@ def _combo_weight_full(cast, slots, fixed, kp_shoujo, refused, rule_xs,
                        cult_sets=(), tt_sets=(), kuro_union_sets=(),
                        ml_forced=frozenset(), kp_forced=frozenset(),
                        ml_strict=None, lovers_cons=(), gw_resolved=frozenset(),
-                       non_ignore=(), _memo=None):
+                       non_ignore=(), bx=None, _memo=None):
     """位置制約（present）＋ターン終了死＋拒否制約を重ねた厳密な数え上げ。
 
     ★kp_forced（B-34）＝「1死＋ループ終了効果」の死者だが、この組に**ファクター枠がある**ため
@@ -1683,7 +1808,17 @@ def _combo_weight_full(cast, slots, fixed, kp_shoujo, refused, rule_xs,
             _sum_role_in(cast, slots, kp_shoujo, refused,
                          "ファクター", {c}, fx, kp_forced_step)])
 
-    return kp_forced_step(fixed)
+    # ★B-243（既定OFF）：ボードX役職（ウィッチ／クロマク）の担い手は「初期エリアが
+    #   ボードX候補に入るキャラ」に限られる。bx=(役職名, 候補キャラの frozenset)。
+    #   呼び側（_recompute）が rule_y とスロット数のゲートを済ませて渡す＝ここは器だけ。
+    def bx_step(fx):
+        if bx is None:
+            return kp_forced_step(fx)
+        _role, _cand = bx
+        return _sum_role_all_in(cast, slots, kp_shoujo, refused, _role,
+                                set(_cand), fx, kp_forced_step)
+
+    return bx_step(fixed)
 
 
 #: ★B-128（2026-08-01）の切替口＝既定ON。False で **bit-for-bit 旧挙動**へ復帰する。
@@ -1778,7 +1913,8 @@ def _mm_phase_signals(history: list[dict]) -> dict:
             continue
         if e.get("event") == "unrest":
             # ★医者が居合わせた不安は医者の友好能力（友好無視＋友好2）の可能性＝証拠にしない
-            if e.get("present") and "医者" in e["present"]:
+            if (e.get("present") and "医者" in e["present"]
+                    and not (B243_DOCTOR_SELF_TARGET and e.get("target") == "医者")):
                 continue
             sig["ml_unrest"] = True
         elif e.get("event") == "anyaku":
@@ -1877,6 +2013,8 @@ def _recompute_sig(cast, set_name, history) -> str:
     h.update(f"|B61={_B61_SCOPE}|B101={_B101_SCOPE}"
              f"|B128={int(B128_COUNT_TO_FACTOR)}"
              f"|B188={int(B188_CONTRACT_SHOUJO_ELIM)}"
+             f"|B243bx={int(B243_BOARD_X_ROLE)}"
+             f"|B243doc={int(B243_DOCTOR_SELF_TARGET)}"
              f"|B231={int(B231_IMOUTO_TRAIT)}"
              f"|B234={int(B234_GOSHINBOKU_TRAIT)}".encode("utf-8"))
     return h.hexdigest()
@@ -1956,7 +2094,8 @@ class Belief:
         revealed = _revealed_roles(self._history)
         # kp_confirmed＝曖昧さなくKP死亡（全組に固定）／kp_gated＝turn_end死＝TT無し組にのみ適用。
         kp_confirmed, kp_gated, kp_factor_possible = _keyperson_deaths(self._history)
-        rule_x = _revealed_rule_x(self._history)
+        # ★T3：開示済みルールXは全件（frozenset）＝BTX で2件開示なら両方を含む組だけ残す。
+        rule_xs_revealed = _revealed_rule_xs(self._history)
         elim_y = _rule_y_eliminations(self._history)
         sig = _mm_phase_signals(self._history)
         refused = _refused_chars(self._history)
@@ -1982,6 +2121,21 @@ class Belief:
         ml_forced = _ml_forced(self._history, self.cast)
         ml_strict = _ml_strict(self._history, self.cast)   # B-61：ML専用のpresent制約
         allowed_y_sets, tt_required = _clean_defeat_constraints(self._history)
+        # ★B-243（既定OFF）：クリーン評価敗北 → ボードX の候補ボード → その役職
+        #   （ウィッチ／クロマク）の担い手候補（初期エリア表が一意に決める＝KB接地）。
+        _bx_boards = _board_x_evidence(self._history) if B243_BOARD_X_ROLE else None
+        _bx_chars = (_board_x_role_candidates(self.cast, _bx_boards)
+                     if _bx_boards is not None else None)
+
+        def _bx_for(combo):
+            """この combo に効く (役職名, 候補キャラ) を返す（効かないなら None）。"""
+            if _bx_chars is None:
+                return None
+            role = _BOARD_X_ROLE_BY_RULE_Y.get(combo["rule_y"])
+            # スロット1の組だけ＝2体（イレギュラーの枠外役職）では KB が X を決めない＝要確認
+            if role is None or combo["slots"].get(role, 0) != 1:
+                return None
+            return (role, _bx_chars)
         death_cons = _turn_end_death_constraints(self._history)
         pd_cons = _protagonist_death_constraints(self._history)
         cult_sets = _cultist_constraints(self._history)
@@ -2019,7 +2173,8 @@ class Belief:
         for combo in self._all_combos:
             if combo["rule_y"] in elim_y:
                 continue
-            if rule_x is not None and rule_x not in combo["rule_xs"]:
+            # 開示集合 ⊆ 組のルールX でなければ除外（1件開示なら従来と同一の述語）
+            if rule_xs_revealed and not rule_xs_revealed.issubset(combo["rule_xs"]):
                 continue
             if not _combo_matches_signals(combo, sig):
                 continue
@@ -2083,7 +2238,7 @@ class Belief:
                 kuro_union_sets=kuro_unions, ml_forced=ml_forced,
                 kp_forced=_kp_forced_here, ml_strict=ml_strict,
                 lovers_cons=lovers_cons, gw_resolved=gw_resolved,
-                non_ignore=non_ignore, _memo=_cwm_memo)
+                non_ignore=non_ignore, bx=_bx_for(combo), _memo=_cwm_memo)
             if w <= 0:
                 continue
             # ★ソフト層（既定オフ＝scale は int 1＝bit-for-bit 不変）。非空時のみ per-combo の

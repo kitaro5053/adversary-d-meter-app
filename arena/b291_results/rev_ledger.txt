@@ -1,0 +1,16 @@
+局                 OFF   ON   Δon  ON289  Δ289
+fs5_guard#0         3    2    -1      2    -1
+fs5_guard#1         3    2    -1      2    -1
+fs5_guard#2         3    2    -1      2    -1
+fs5_guard#4         3    2    -1      2    -1
+fs5_guard#7         3    2    -1      2    -1
+random_BTX#0        1    1    +0      2    +1
+random_BTX#1        1    8    +7      1    +0
+random_BTX#3        2    8    +6      8    +6
+random_BTX#8        6    6    +0      8    +2
+random_BTX#15       3    2    -1      2    -1
+random_BTX#17       1    2    +1      2    +1
+random_FS#3         8    2    -6      2    -6
+random_FS#8         8    4    -4      3    -5
+random_FS#16        8    1    -7      1    -7
+合計                            -9          -14

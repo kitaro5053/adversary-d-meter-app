@@ -1,0 +1,7 @@
+ループ数ベンチ: 80局 loops=8 days=5 PYTHONHASHSEED=0
+  平均 勝利までのループ数: 3.812（全敗11件は9として計上）
+  ★防衛可能な脚本のみ: 3.812（防衛不能0局は平均None＝FB勝負が最適な脚本）
+  結末: defense:69  fb_loss:8  fb_win:2  loss:1
+  分布: L1:3  L2:18  L3:34  L4:9  L5:3  L6:1  L8:1  L9:11
+  脚本別平均: btx5_future=2.3  btx5_seal=3.2  btx5_seal_cat=7.4  fs5_guard=3.0  random_BTX=4.15  random_FS=3.15
+  所要 82.0秒

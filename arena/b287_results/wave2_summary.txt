@@ -1,0 +1,119 @@
+====================================================================================================
+条件          形       第1層再置   Σmm    Δ   平均ltw  def(参考)  D1  D2  非decoy
+d3_id       off       164   289   +0   3.064      132  23  48       0
+d3_id       on        139   284   -5   3.029      132  20  60       0
+d3_id       a         131   282   -7   3.014      132  20  60       0
+d3_id       b         158   284   -5   3.029      132  22  45       0
+d3_id       ab        144   284   -5   3.029      132  19  57       0
+------------------------------------------------------------------------------------------
+d3_rev      off       182   250   +0   2.786      138  22  70       0
+d3_rev      on        164   254   +4   2.814      138  22  81       0
+d3_rev      a         158   252   +2   2.800      138  21  80       0
+d3_rev      b         197   252   +2   2.800      138  17  73       0
+d3_rev      ab        170   253   +3   2.807      138  16  79       0
+------------------------------------------------------------------------------------------
+d3_h1       off       156   225   +0   2.607      139  20  65       0
+d3_h1       on        138   231   +6   2.650      138  21  74       0
+d3_h1       a         131   229   +4   2.636      138  20  73       0
+d3_h1       b         162   218   -7   2.557      139  19  66       0
+d3_h1       ab        144   230   +5   2.643      138  18  70       0
+------------------------------------------------------------------------------------------
+d3_rot1     off       164   292   +0   3.086      131  24  56       0
+d3_rot1     on        139   286   -6   3.043      131  21  68       0
+d3_rot1     a         131   284   -8   3.029      131  21  68       0
+d3_rot1     b         158   286   -6   3.043      131  23  53       0
+d3_rot1     ab        144   286   -6   3.043      131  20  65       0
+------------------------------------------------------------------------------------------
+d5_id       off       187   202   +0   3.525       73  23  58       1
+d5_id       on        141   214  +12   3.675       71  22  61       1
+d5_id       a         149   214  +12   3.675       71  24  61       1
+d5_id       b         229   222  +20   3.775       69  26  58       1
+d5_id       ab        167   225  +23   3.812       69  25  65       1
+------------------------------------------------------------------------------------------
+d5_rev      off       209   174   +0   3.175       79  20  59       0
+d5_rev      on        168   180   +6   3.250       77  21  67       0
+d5_rev      a         187   182   +8   3.275       77  20  66       0
+d5_rev      b         198   175   +1   3.188       76  23  61       0
+d5_rev      ab        182   185  +11   3.312       76  23  68       0
+------------------------------------------------------------------------------------------
+d5_h1       off       434   226   +0   3.825       72  18  71       0
+d5_h1       on        368   224   -2   3.800       72  17  70       0
+d5_h1       a         400   230   +4   3.875       71  18  70       0
+d5_h1       b         431   235   +9   3.938       69  21  75       0
+d5_h1       ab        383   230   +4   3.875       70  18  75       0
+------------------------------------------------------------------------------------------
+d5_rot1     off       179   206   +0   3.575       73  22  65       1
+d5_rot1     on        138   217  +11   3.712       71  21  68       1
+d5_rot1     a         146   217  +11   3.712       71  23  68       1
+d5_rot1     b         213   220  +14   3.750       70  27  65       1
+d5_rot1     ab        159   223  +17   3.788       70  24  72       1
+------------------------------------------------------------------------------------------
+
+== flip 全数（OFF→各形）==
+d3_id on: revenge#1:3(defe)→2(defe)[-1]  revenge#2:3(defe)→2(defe)[-1]  revenge#4:3(defe)→2(defe)[-1]  revenge#5:3(defe)→2(defe)[-1]  revenge#6:3(defe)→2(defe)[-1]  revenge#8:3(defe)→2(defe)[-1]  random_FS#8:5(defe)→8(defe)[+3]  random_BTX#6:7(defe)→5(defe)[-2]  random_BTX#8:6(defe)→4(defe)[-2]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_id a: revenge#1:3(defe)→2(defe)[-1]  revenge#2:3(defe)→2(defe)[-1]  revenge#4:3(defe)→2(defe)[-1]  revenge#5:3(defe)→2(defe)[-1]  revenge#6:3(defe)→2(defe)[-1]  revenge#8:3(defe)→2(defe)[-1]  random_FS#8:5(defe)→8(defe)[+3]  random_BTX#6:7(defe)→5(defe)[-2]  random_BTX#8:6(defe)→4(defe)[-2]
+d3_id b: revenge#3:3(defe)→2(defe)[-1]  revenge#9:3(defe)→2(defe)[-1]  random_BTX#6:7(defe)→5(defe)[-2]  random_BTX#8:6(defe)→3(defe)[-3]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_id ab: revenge#1:3(defe)→2(defe)[-1]  revenge#2:3(defe)→2(defe)[-1]  revenge#4:3(defe)→2(defe)[-1]  revenge#5:3(defe)→2(defe)[-1]  revenge#6:3(defe)→2(defe)[-1]  revenge#8:3(defe)→2(defe)[-1]  random_FS#8:5(defe)→8(defe)[+3]  random_BTX#6:7(defe)→5(defe)[-2]  random_BTX#8:6(defe)→4(defe)[-2]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_rev on: revenge#0:2(defe)→3(defe)[+1]  revenge#1:2(defe)→3(defe)[+1]  revenge#2:2(defe)→3(defe)[+1]  revenge#3:2(defe)→3(defe)[+1]  revenge#4:2(defe)→3(defe)[+1]  revenge#5:2(defe)→3(defe)[+1]  revenge#6:2(defe)→3(defe)[+1]  revenge#7:2(defe)→3(defe)[+1]  revenge#8:2(defe)→3(defe)[+1]  revenge#9:2(defe)→3(defe)[+1]  random_FS#18:6(defe)→4(defe)[-2]  random_BTX#1:7(defe)→2(defe)[-5]  random_BTX#6:9(fb_l)→3(defe)[-6]  random_BTX#8:4(defe)→9(fb_w)[+5]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_rev a: revenge#0:2(defe)→3(defe)[+1]  revenge#1:2(defe)→3(defe)[+1]  revenge#2:2(defe)→3(defe)[+1]  revenge#3:2(defe)→3(defe)[+1]  revenge#4:2(defe)→3(defe)[+1]  revenge#5:2(defe)→3(defe)[+1]  revenge#6:2(defe)→3(defe)[+1]  revenge#7:2(defe)→3(defe)[+1]  revenge#8:2(defe)→3(defe)[+1]  revenge#9:2(defe)→3(defe)[+1]  random_FS#18:6(defe)→4(defe)[-2]  random_BTX#1:7(defe)→2(defe)[-5]  random_BTX#6:9(fb_l)→3(defe)[-6]  random_BTX#8:4(defe)→9(fb_w)[+5]
+d3_rev b: shrine#4:4(defe)→3(defe)[-1]  random_FS#18:6(defe)→5(defe)[-1]  random_BTX#1:7(defe)→4(defe)[-3]  random_BTX#6:9(fb_l)→7(defe)[-2]  random_BTX#8:4(defe)→9(fb_w)[+5]  random_BTX#15:2(defe)→4(defe)[+2]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_rev ab: revenge#0:2(defe)→3(defe)[+1]  revenge#1:2(defe)→3(defe)[+1]  revenge#2:2(defe)→3(defe)[+1]  revenge#3:2(defe)→3(defe)[+1]  revenge#4:2(defe)→3(defe)[+1]  revenge#5:2(defe)→3(defe)[+1]  revenge#6:2(defe)→3(defe)[+1]  revenge#7:2(defe)→3(defe)[+1]  revenge#8:2(defe)→3(defe)[+1]  revenge#9:2(defe)→3(defe)[+1]  shrine#4:4(defe)→3(defe)[-1]  random_FS#18:6(defe)→4(defe)[-2]  random_BTX#1:7(defe)→2(defe)[-5]  random_BTX#6:9(fb_l)→3(defe)[-6]  random_BTX#8:4(defe)→9(fb_w)[+5]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_h1 on: revenge#0:2(defe)→3(defe)[+1]  revenge#7:2(defe)→3(defe)[+1]  random_FS#6:9(loss)→5(defe)[-4]  random_BTX#1:6(defe)→9(fb_l)[+3]  random_BTX#8:5(defe)→9(fb_w)[+4]  random_BTX#15:3(defe)→2(defe)[-1]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_h1 a: revenge#0:2(defe)→3(defe)[+1]  revenge#7:2(defe)→3(defe)[+1]  random_FS#6:9(loss)→5(defe)[-4]  random_BTX#1:6(defe)→9(fb_l)[+3]  random_BTX#8:5(defe)→9(fb_w)[+4]  random_BTX#15:3(defe)→2(defe)[-1]
+d3_h1 b: revenge#0:2(defe)→3(defe)[+1]  revenge#1:3(defe)→2(defe)[-1]  revenge#2:3(defe)→2(defe)[-1]  revenge#3:3(defe)→2(defe)[-1]  revenge#4:3(defe)→2(defe)[-1]  revenge#5:3(defe)→2(defe)[-1]  revenge#6:3(defe)→2(defe)[-1]  revenge#7:2(defe)→3(defe)[+1]  revenge#8:3(defe)→2(defe)[-1]  revenge#9:3(defe)→2(defe)[-1]  shrine#8:4(defe)→3(defe)[-1]  random_FS#6:9(loss)→5(defe)[-4]  random_BTX#1:6(defe)→9(fb_l)[+3]  random_BTX#8:5(defe)→3(defe)[-2]  random_BTX#15:3(defe)→4(defe)[+1]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_h1 ab: revenge#0:2(defe)→3(defe)[+1]  revenge#7:2(defe)→3(defe)[+1]  shrine#8:4(defe)→3(defe)[-1]  random_FS#6:9(loss)→5(defe)[-4]  random_BTX#1:6(defe)→9(fb_l)[+3]  random_BTX#8:5(defe)→9(fb_w)[+4]  random_BTX#15:3(defe)→2(defe)[-1]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_rot1 on: revenge#1:3(defe)→2(defe)[-1]  revenge#2:3(defe)→2(defe)[-1]  revenge#4:3(defe)→2(defe)[-1]  revenge#5:3(defe)→2(defe)[-1]  revenge#6:3(defe)→2(defe)[-1]  revenge#8:3(defe)→2(defe)[-1]  random_FS#8:5(defe)→8(defe)[+3]  random_BTX#6:7(defe)→5(defe)[-2]  random_BTX#8:6(defe)→4(defe)[-2]  random_BTX#15:3(defe)→2(defe)[-1]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_rot1 a: revenge#1:3(defe)→2(defe)[-1]  revenge#2:3(defe)→2(defe)[-1]  revenge#4:3(defe)→2(defe)[-1]  revenge#5:3(defe)→2(defe)[-1]  revenge#6:3(defe)→2(defe)[-1]  revenge#8:3(defe)→2(defe)[-1]  random_FS#8:5(defe)→8(defe)[+3]  random_BTX#6:7(defe)→5(defe)[-2]  random_BTX#8:6(defe)→4(defe)[-2]  random_BTX#15:3(defe)→2(defe)[-1]
+d3_rot1 b: revenge#3:3(defe)→2(defe)[-1]  revenge#9:3(defe)→2(defe)[-1]  random_BTX#6:7(defe)→5(defe)[-2]  random_BTX#8:6(defe)→3(defe)[-3]  random_BTX#15:3(defe)→2(defe)[-1]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_rot1 ab: revenge#1:3(defe)→2(defe)[-1]  revenge#2:3(defe)→2(defe)[-1]  revenge#4:3(defe)→2(defe)[-1]  revenge#5:3(defe)→2(defe)[-1]  revenge#6:3(defe)→2(defe)[-1]  revenge#8:3(defe)→2(defe)[-1]  random_FS#8:5(defe)→8(defe)[+3]  random_BTX#6:7(defe)→5(defe)[-2]  random_BTX#8:6(defe)→4(defe)[-2]  random_BTX#15:3(defe)→2(defe)[-1]  random_BTX#16:6(defe)→8(defe)[+2]
+d5_id on: random_FS#8:7(defe)→9(loss)[+2]  random_BTX#0:4(defe)→2(defe)[-2]  random_BTX#1:3(defe)→8(defe)[+5]  random_BTX#3:9(fb_l)→9(fb_w)[+0]  random_BTX#8:5(defe)→9(fb_w)[+4]  random_BTX#15:2(defe)→3(defe)[+1]  random_BTX#16:2(defe)→4(defe)[+2]
+d5_id a: random_FS#8:7(defe)→9(loss)[+2]  random_BTX#0:4(defe)→2(defe)[-2]  random_BTX#1:3(defe)→8(defe)[+5]  random_BTX#3:9(fb_l)→9(fb_w)[+0]  random_BTX#8:5(defe)→9(fb_w)[+4]  random_BTX#15:2(defe)→3(defe)[+1]  random_BTX#16:2(defe)→4(defe)[+2]
+d5_id b: btx5_seal_cat#4:4(defe)→9(fb_l)[+5]  random_FS#0:3(defe)→4(defe)[+1]  random_FS#3:4(defe)→9(loss)[+5]  random_FS#8:7(defe)→4(defe)[-3]  random_FS#10:4(defe)→2(defe)[-2]  random_BTX#0:4(defe)→2(defe)[-2]  random_BTX#1:3(defe)→9(fb_l)[+6]  random_BTX#4:3(defe)→9(fb_l)[+6]  random_BTX#8:5(defe)→7(defe)[+2]  random_BTX#16:2(defe)→4(defe)[+2]
+d5_id ab: btx5_seal_cat#4:4(defe)→9(fb_l)[+5]  random_FS#8:7(defe)→9(loss)[+2]  random_BTX#0:4(defe)→2(defe)[-2]  random_BTX#1:3(defe)→8(defe)[+5]  random_BTX#3:9(fb_l)→9(fb_w)[+0]  random_BTX#4:3(defe)→9(fb_l)[+6]  random_BTX#8:5(defe)→9(fb_w)[+4]  random_BTX#15:2(defe)→3(defe)[+1]  random_BTX#16:2(defe)→4(defe)[+2]
+d5_rev on: fs5_guard#0:3(defe)→4(defe)[+1]  fs5_guard#1:3(defe)→4(defe)[+1]  fs5_guard#2:3(defe)→4(defe)[+1]  fs5_guard#4:3(defe)→4(defe)[+1]  fs5_guard#7:3(defe)→4(defe)[+1]  random_FS#0:2(defe)→9(loss)[+7]  random_FS#8:8(defe)→9(loss)[+1]  random_BTX#0:4(defe)→2(defe)[-2]  random_BTX#8:7(defe)→5(defe)[-2]  random_BTX#15:4(defe)→3(defe)[-1]  random_BTX#16:6(defe)→4(defe)[-2]
+d5_rev a: fs5_guard#0:3(defe)→4(defe)[+1]  fs5_guard#1:3(defe)→4(defe)[+1]  fs5_guard#2:3(defe)→4(defe)[+1]  fs5_guard#4:3(defe)→4(defe)[+1]  fs5_guard#7:3(defe)→4(defe)[+1]  random_FS#0:2(defe)→9(loss)[+7]  random_FS#8:8(defe)→9(loss)[+1]  random_BTX#0:4(defe)→2(defe)[-2]  random_BTX#8:7(defe)→5(defe)[-2]  random_BTX#15:4(defe)→3(defe)[-1]
+d5_rev b: btx5_seal_cat#2:5(defe)→4(defe)[-1]  btx5_seal_cat#4:5(defe)→4(defe)[-1]  btx5_seal_cat#6:5(defe)→4(defe)[-1]  random_FS#6:4(defe)→3(defe)[-1]  random_FS#8:8(defe)→3(defe)[-5]  random_BTX#0:4(defe)→2(defe)[-2]  random_BTX#3:9(fb_l)→9(fb_w)[+0]  random_BTX#4:3(defe)→9(fb_l)[+6]  random_BTX#8:7(defe)→9(fb_w)[+2]  random_BTX#18:5(defe)→9(fb_l)[+4]
+d5_rev ab: fs5_guard#0:3(defe)→4(defe)[+1]  fs5_guard#1:3(defe)→4(defe)[+1]  fs5_guard#2:3(defe)→4(defe)[+1]  fs5_guard#4:3(defe)→4(defe)[+1]  fs5_guard#7:3(defe)→4(defe)[+1]  btx5_seal_cat#2:5(defe)→4(defe)[-1]  btx5_seal_cat#4:5(defe)→4(defe)[-1]  btx5_seal_cat#6:5(defe)→4(defe)[-1]  random_FS#0:2(defe)→9(loss)[+7]  random_FS#8:8(defe)→9(loss)[+1]  random_BTX#0:4(defe)→2(defe)[-2]  random_BTX#4:3(defe)→9(fb_l)[+6]  random_BTX#8:7(defe)→5(defe)[-2]  random_BTX#15:4(defe)→3(defe)[-1]
+d5_h1 on: random_FS#8:6(defe)→9(loss)[+3]  random_BTX#0:4(defe)→2(defe)[-2]  random_BTX#1:9(fb_l)→5(defe)[-4]  random_BTX#8:3(defe)→7(defe)[+4]  random_BTX#15:4(defe)→3(defe)[-1]  random_BTX#16:6(defe)→4(defe)[-2]
+d5_h1 a: random_FS#8:6(defe)→9(loss)[+3]  random_BTX#0:4(defe)→2(defe)[-2]  random_BTX#8:3(defe)→7(defe)[+4]  random_BTX#15:4(defe)→3(defe)[-1]
+d5_h1 b: btx5_seal_cat#0:5(defe)→3(defe)[-2]  btx5_seal_cat#7:5(defe)→3(defe)[-2]  btx5_seal_cat#9:5(defe)→3(defe)[-2]  random_FS#0:2(defe)→9(loss)[+7]  random_BTX#0:4(defe)→2(defe)[-2]  random_BTX#1:9(fb_l)→5(defe)[-4]  random_BTX#4:3(defe)→9(fb_l)[+6]  random_BTX#8:3(defe)→9(fb_w)[+6]  random_BTX#15:4(defe)→3(defe)[-1]  random_BTX#18:6(defe)→9(fb_l)[+3]
+d5_h1 ab: btx5_seal_cat#0:5(defe)→3(defe)[-2]  btx5_seal_cat#7:5(defe)→3(defe)[-2]  btx5_seal_cat#9:5(defe)→3(defe)[-2]  random_FS#8:6(defe)→9(loss)[+3]  random_BTX#0:4(defe)→2(defe)[-2]  random_BTX#3:9(fb_w)→9(fb_l)[+0]  random_BTX#4:3(defe)→9(fb_l)[+6]  random_BTX#8:3(defe)→7(defe)[+4]  random_BTX#15:4(defe)→3(defe)[-1]
+d5_rot1 on: random_FS#8:7(defe)→9(loss)[+2]  random_BTX#0:4(defe)→2(defe)[-2]  random_BTX#1:3(defe)→8(defe)[+5]  random_BTX#3:9(fb_l)→9(fb_w)[+0]  random_BTX#8:5(defe)→9(fb_w)[+4]  random_BTX#16:2(defe)→4(defe)[+2]
+d5_rot1 a: random_FS#8:7(defe)→9(loss)[+2]  random_BTX#0:4(defe)→2(defe)[-2]  random_BTX#1:3(defe)→8(defe)[+5]  random_BTX#3:9(fb_l)→9(fb_w)[+0]  random_BTX#8:5(defe)→9(fb_w)[+4]  random_BTX#16:2(defe)→4(defe)[+2]
+d5_rot1 b: random_FS#0:3(defe)→4(defe)[+1]  random_FS#3:4(defe)→9(loss)[+5]  random_FS#8:7(defe)→4(defe)[-3]  random_FS#10:4(defe)→2(defe)[-2]  random_BTX#0:4(defe)→2(defe)[-2]  random_BTX#1:3(defe)→9(fb_l)[+6]  random_BTX#4:3(defe)→9(fb_l)[+6]  random_BTX#8:5(defe)→7(defe)[+2]  random_BTX#16:2(defe)→4(defe)[+2]  random_BTX#18:6(defe)→5(defe)[-1]
+d5_rot1 ab: random_FS#8:7(defe)→9(loss)[+2]  random_BTX#0:4(defe)→2(defe)[-2]  random_BTX#1:3(defe)→8(defe)[+5]  random_BTX#3:9(fb_l)→9(fb_w)[+0]  random_BTX#4:3(defe)→9(fb_l)[+6]  random_BTX#8:5(defe)→9(fb_w)[+4]  random_BTX#16:2(defe)→4(defe)[+2]
+
+== 第2陣の要約（2026-08-29・レーン報告の付録＝正典は lane 報告本文） ==
+- Σ第2層Δ（8条件計）: on +26 / a +26 / b +28 / ab +52
+- 日級別: 3日級 on -1 / a -9 / b -16 / ab -3 ／ 5日級 on +27 / a +35 / b +44 / ab +55
+- perm符号一致: 5日級は a/b/ab とも4条件すべて正（on は h1 -2 で不一致）。3日級は全形で不一致。
+- D2番人: (b) のみ増加を全消し（d3_id 48→45・帰属＝revenge族+random_BTX#0/#6 の増分が全て0に）。
+  (a) は D2 に全く効かず（on と同値）＝完成会計はループ頭では何も弾かない（静的1枚/ターンは
+  ほぼ常に「届く」＝弾くのは中盤の短残日だけ）。(ab) は on よりわずかに減るが増のまま。
+- 機序（autopsy＝mm set_card 決定列の直接差分）:
+  * 退行 d3 revenge#1 (off3→ab2): L2D1 で mem-broken の学校(ボードX)から降り、暗躍+2 が
+    男子学生へ＝ボードX の完成が1手遅れ主人公が L2 防衛。(a) の会計は刑事/医者線を
+    「届く」と判定＝弾かない（主人公の不安-1 を数えない静的会計の構造的限界）。
+  * 改善 d3 random_BTX#16 (6→8)・d5 random_BTX#1 (3→8): L2D1 で 暗躍+2 だけ
+    守られた正面から外し 暗躍+1 で線を維持（+2→女子学生/病院）＝第1陣の改善機序が
+    (b) の狭い述語でそのまま再現・全4perm で保持（(a)単独は全4permでこの改善を失う）。
+  * 退行 d5 random_BTX#0 (4→2): 全形共通（第1陣から持ち越し）＝L2D1 の +2→マスコミが
+    不発のまま神社線が減速。
+  * (b) の3日級h1退行 (revenge×8): 同じ +2温存スワップが revenge では損
+    （ボードX は +2 押しで今ループ完成する線＝温存が完成を1手遅らせる）＝±1帯の
+    perm 籤と重なり符号不安定。
+
+== 第3陣（B287_SPARE_VALUE_CHECK・2026-08-29）＝★負の結果（機序解明済み） ==
+- 3日級Δ: bv -5/+2/-6/-6 ≒ b -5/+2/-7/-6（h1 の +1 は shrine#8 の flip 解消のみ）。
+- ★revenge の flip は b と bv で全4perm 完全同一＝温存述語の狭めは revenge を1局も救わない。
+  機序（revenge#1 h1 L2D1 実測）＝trump_sink=True が sink(i) で常に立つ：D3 遠隔殺人の犯人
+  刑事が reachable（B-286 の緩和が broken 板で開く＋フレンド男子学生が B-280 会計で的候補）
+  ＝「行き先に打点会計が立つか」では弾けない。revenge の失敗は価値の不在ではなく
+  **比較の問題**（ボードX+2押し＝今ループ確定勝ち > 的づくり＝来ループの見込み）。
+- ★5日級に併せると損: d5_id abv +12 vs ab +23（-11）＝温存が改善だった局で check が
+  温存を却下する＝既定 ON への同梱は不可。既定 OFF 維持（production は ab のまま・
+  d5_id ab の再走が wave2 と bit 同一なのを第3陣コード上で確認済み）。
+- 含意＝3日級の残る手当は「行き先の価値」軸では出ない。次候補＝(1) 席側の会計
+  （broken 席が今ループ完成する線なら降りない/温存しない＝比較そのものを写す）
+  (2) BREAK_MIN ループ間版（ループ頭全降りの閾値を上げる）(3) 冷却持ち越し
+  （押し合い実績で乗り換え先を割り引く＝(a) の楽観の是正）。

@@ -33,12 +33,14 @@ from __future__ import annotations
 
 import random
 from collections import Counter
+from types import SimpleNamespace
 
 from engine.board import AREAS
-from engine.data import (ROLE_CLAUSE_ABILITY, ability_kind, forbidden_of,
+from engine.incident import effective_unrest_for_incident
+from engine.data import (ROLE_CLAUSE_ABILITY, ability_kind,
                         goodwill_abilities_of, incident_defeats_protagonists,
                         rule_y_decisive_incident, unrest_threshold_of)
-from engine.models import MOVE_CARDS
+from engine.models import MOVE_CARDS, UNREST_DELTA
 from engine.turn_end_rules import TT_DEFEAT_GOODWILL_MAX
 
 
@@ -52,6 +54,21 @@ def _incident_nullified_by_immortal(inc_name: str, culprit_role: str) -> bool:
     ＝A-25（臨界0への霧）と同型の「透明に死んだ投資」を、不死×自殺の会計として一般化。
     """
     return inc_name == "自殺" and ROLE_CLAUSE_ABILITY.get(culprit_role) == "不死"
+
+
+# ★B-280：遠隔殺人の「的」に要るキャラの暗躍カウンター数
+#   （`rules/40_first_steps.md:152`／`rules/50_basic_tragedy_x.md:209`＝
+#    「暗躍カウンターが2つ以上置かれているキャラクターがいる場合、その中から任意の1人を死亡」）。
+#   ★同じ条文の名前つき定数が既に2つある（`agents/defense_plan.REMOTE_MURDER_ANYAKU`＝主人公側／
+#     `sim/script_quality._ROLE_EFFECT_KILL_ANYAKU`＝脚本評価側）。本モジュール（脚本家AI）は
+#     そのどちらにも依存していないので**同じ条文をここでも名前つきで持つ**（マジックナンバー化しない）。
+REMOTE_MURDER_ANYAKU = 2
+
+# ★T7c（2026-09-06）：メインラバーズ効果の不安側条件＝「不安カウンターが3つ以上（＋暗躍1つ以上）
+#   置かれている場合、ターン終了フェイズに主人公を死亡させても良い」（`rules/50_basic_tragedy_x.md:160`）。
+#   `_analyze_impl` の lovers パス（`chars[mainlover]["unrest"] >= 3`）と同じ条文＝ここでは
+#   (4a2) の錨例外（`_t7c_lovers_dest_card`）だけが読む。既定 OFF の切替口の下でしか使われない。
+MAINLOVER_UNREST = 3
 
 
 # ★B-118（2026-07-31）：死亡すると mm の損になる「自陣の攻撃資産」役職（KB根拠＝監査doc §2c）。
@@ -88,7 +105,8 @@ def _incident_removes_own_asset(inc_name: str, culprit_role: str) -> bool:
     return inc_name == "自殺" and culprit_role in _SELF_HARM_ROLES
 from sim.abilities import board_anyaku_removal_scope
 from sim.reference import CHARACTER_ATTRIBUTES
-from sim.state import missing_incident_boards_from_view
+from sim.state import (current_forbidden_from_view,
+                       missing_incident_boards_from_view)
 
 # ★A-78 計測フック（既定 None＝**本番経路は完全に無変更**）。`arena/a78_audit.py` が
 #   差し替えて「行方不明の供給を、犯人が行けない板に数えていた席」を数える（B-105 が要求する
@@ -101,7 +119,21 @@ A78_PROBE = None
 #   呼び出しは1 `_analyze` につき1回（押し切り会計の直後）。
 B124_PROBE = None
 
+# ★B-284 計測フック（既定 None＝**本番経路は完全に無変更**）。`arena/b284_probe.py` が
+#   差し替えて `_cap_reaching`（A-74 の Gale–Hoffman 容量）の**部分集合ごと**の判定を拾う。
+#   引数＝(view, n_sinks, dmax, demand_sum, days_left, p2_left, cap_now, cap_exact)。
+#   `n_sinks==1` の部分集合＝**物理的に1つの対象**＝同一対象への重ね置き不可
+#   （KB: `rules/10_action_cards.md:81`）ゆえ上限は `days_left + 1` で、
+#   現行の `days_left + min(2,dmax)` は +2 未消費のとき**1点過大**になる。
+#   「過大評価が決定的だった部分集合」＝`cap_exact < demand <= cap_now` の件数を数える。
+B284_PROBE = None
+
 _ANRYAKU_VALUE = {"暗躍+1": 1, "暗躍+2": 2}
+
+# ★B-289：拮抗線（`alt_lines`＝事件の犯人）を**実際に進められる**札＝不安を積む札。
+#   単一ソース＝`engine.models.UNREST_DELTA` の正の増分（現行の脚本家手札では `不安+1`）。
+#   `暗躍+1/+2` は犯人の不安を1も動かさない＝線は進まない（カード種の接地）。
+_PUMP_CARDS = frozenset(c for c, d in UNREST_DELTA.items() if d > 0)
 
 # ★A-77：勝ち筋の会計が**打点を表現できている**事件（＝押し切りに札を割く価値を計算済み）。
 #   行方不明＝犯人を任意のボードへ移し、そのボードに暗躍1（KB: rules/40_first_steps.md:153／
@@ -418,6 +450,11 @@ MM_PARAMS: dict[str, float] = {
     #   ★1〜3では供給を**スカラー1本でなく勝ち筋の集合ごと**に評価する（置ける場所が違う）。
     #   ★掃引で採用＝2（札＋能力）。1（札のみ）は能力供給を落とすぶん保守的すぎ、
     #   3（−遮断）は掃引の全点で退行した（3日L1が3→14＝btx_bomb帯の二正面が全滅）。
+    #   ★★【2026-08-31 追記＝実態との突き合わせ】**以下の「既定は0」は当日の暫定状態の記述で、
+    #      現行の既定は `supply_model=2.0`／`supply_gate_raw=3.0`**（同じ 2026-07-27 に
+    #      ユーザー裁定で A-73/A-73b の**再基準化**が land され、既定が引き上げられた＝
+    #      `docs/引き継ぎ_新スレッド_2026-07-21.md:24`「測定era境界（2026-07-27・A-73/A-73b
+    #      再基準化・ユーザー裁定）」とその land 本文）。下の注記は**経緯の記録**として残す。
     #   ★★FableAゲート裁定（2026-07-27）＝**既定は0（旧＝日数×2）でland**。
     #   理由＝採用形(2)は3日 防衛128→107・loss0→1、5日 67→62・**loss0→4**、較正済み帯も大きく移動
     #   （btx_bomb 2.0→9.0／btx_seal 3.3→9.0／fs5_guard 2.3→3.1）＝**釣り合いの再基準化に相当**し、
@@ -448,6 +485,13 @@ MM_PARAMS: dict[str, float] = {
     #   ＝勝手にゲートを緩めない（A-64先例）ため**保留**。採否はFableA裁定。
     #   ★★FableAゲート裁定（2026-07-27）＝supply_model を既定0にしたため**こちらも既定0**
     #   （両方0＝A-73前と完全同一＝per-game bit一致を実測確認）。A-73b の後に一括で再評価する。
+    #   ★★【2026-08-31 追記】**この記述は実態とずれている＝現行の既定は 3.0**（同日の再基準化 land で
+    #      引き上げ済み。上の supply_model の追記と同じ経緯）。宿題「A-73b の後に一括で再評価」は
+    #      **B-284（§72-121）で入口まで到達し、`docs/提案_supply_gate_raw_の再基準化_2026-08-31.md`
+    #      に実測をまとめた**＝ユーザー裁定 2026-08-31 は「**据え置き**」（gate_raw=3 のまま）。
+    #      ★実測の要点＝第2層は gate 3:289/225・gate 2:283/234・gate 1:301/216（3日級/5日級）
+    #      ＝**単純な勝ちが無く日数で符号が反転**。gate=2 は M2 の land 済み契約テスト
+    #      （`tests/test_heuristic.py` `test_path_cost_rises_when_role_revealed`）を破るため方針裁定案件。
     "supply_gate_raw": 3.0,
     # ★A-73b（2026-07-27）：供給を**対象別（sink別）に持ち、排他的に配分**する。
     #   A-73 は供給を「勝ち筋の集合に対するスカラー1本」で足し込むため、次の3つが甘い：
@@ -677,6 +721,11 @@ def _single_move_card(src: str, dst: str) -> str | None:
 
 _CARD_TOGGLE = {"移動←→": (1, 0), "移動↑↓": (0, 1), "移動斜め": (1, 1)}
 
+#: ★B-293：規則上いっさい盤面を動かさない移動札に与える番兵スコア。
+#  「候補から外す」を **option 列を削らずに**実現する（`_pick` の rng 消費列を保つ）。
+#  `_score_set` が返しうるどの値より小さい＝他に1つでも option があれば必ず負ける。
+_B293_VOID = -1e9
+
 
 def _move_dest(area: str, card: str) -> str | None:
     """area のキャラに card を置いたときの行き先エリア名。"""
@@ -705,6 +754,238 @@ def _perp_block_card(area: str, board: str) -> str | None:
         return None  # 対角＝主人公は届かない（斜め不所持）＝ブロック不要
     perp = (t[0] ^ 1, t[1] ^ 1)  # 直交する1ビット
     return {(1, 0): "移動←→", (0, 1): "移動↑↓"}.get(perp)
+
+
+# ---------------------------------------------------------------------------
+# ★B-286〔読まれた線から降りる〕の検出器（公開情報のみ・決定時点で計算できる形）
+# ---------------------------------------------------------------------------
+def _b287_days_ok(view: dict) -> bool:
+    """★B-287 の日数ゲート（§72-119 ユーザー裁定＝**5日級限定 ON**・2026-08-29）。
+
+    `days_per_loop >= B287_MIN_DAYS(=5)` のときだけ B-287 の3口
+    （LOOP_MEMORY／DESCEND_FEASIBLE／SPARE_TRUMP）が実効になる。
+    3日級・4日級は**完全に従来経路**（bit 不変が land 条件＝第2陣の実測で
+    3日級は全形とも第2層符号不一致のため）。4日級は未測につき OFF＝現状維持
+    （後日4日級ベンチを作れば拡張を検討＝§72-119）。
+    適用点は3口の**入口2箇所**（`b286_line_signals` の mem 判定と
+    `_analyze_impl` の (a)フィルタ/mem_extra 構築）に集約＝`_b286_penalty` は
+    mem_extra が空・alt 素通しになることで自動的に従来経路（散らさない）。
+    `days_per_loop` 欠落時は 0 扱い＝ゲート閉（保守側＝従来経路）。
+    計測用の口＝`B287_MIN_DAYS` はクラス属性＝probe が 0 に倒せば3日級でも
+    発火する（第3陣の掃引用・`arena/b287_probe.py` の _MODES）。
+    """
+    return (view.get("days_per_loop") or 0) >= HeuristicMastermind.B287_MIN_DAYS
+
+
+def _b291_bait_counts(view: dict) -> dict:
+    """★B-291：**今ループ中に脚本家が既に `暗躍+1` を置いた枚数**（席ごと・公開履歴のみ）。
+
+    A-57 の「+1 連打の中途半端」を作らないためのガード材料＝拘束は1枚まで。
+    材料は `b286_line_signals` が既に読んでいる一次情報と同じ `cards_revealed`
+    （`sim/flow.py` が毎ターン公開する両陣営の伏せ札）＝**新しい会計は作らない**。
+    決定時点の view には**当ターンの伏せ札はまだ載っていない**（公開は行動解決時）
+    ＝返る集合は「過去ターンに置いた席」＝今から置く1枚が2枚目かどうかを一意に決める。
+    同一ターンの重ね置きは規則で禁止（`rules/10_action_cards.md:81`）＝二重計上はない。
+    """
+    loop = view.get("loop", 1)
+    out: dict[tuple, int] = {}
+    for e in view.get("history", ()) or ():
+        if e.get("event") != "cards_revealed" or e.get("loop") != loop:
+            continue
+        for p in e.get("placements", ()) or ():
+            if p.get("owner") == "mastermind" and p.get("card") == "暗躍+1":
+                k = (p.get("target_kind"), p.get("target"))
+                out[k] = out.get(k, 0) + 1
+    return out
+
+
+def b286_line_signals(view: dict, *, loop_memory: bool | None = None) -> dict:
+    """今ループの公開情報から「折られた実績のある線」を検出する（B-286・§72-114）。
+
+    ★B-287〔ループ間反復〕プロトタイプ（既定 OFF・計測フェーズ）：
+    `loop_memory`＝②(ii) 直撃カウントを**ループ境界を越えて**数えるか。
+    None（既定）＝`HeuristicMastermind.B287_LOOP_MEMORY` に従う／True/False＝明示上書き
+    （計測道具が検出定義を固定するための口＝ON掃引中でも「前ループ限定の検出」を
+    同じ関数で引けるようにする）。OFF＝従来どおり今ループのみ＝bit-for-bit 不変。
+    ★ON でも **②(i) 冷却と flows は今ループのみ**のまま（冷却は「押し合いの最中」＝
+    B286_COOL_DESCENT 否決と同じ機序でループ間に持ち越さない。設計判断は B-287 報告参照）。
+
+    ★判定は**新設しない**＝B-282 の分類器（`arena/b282_classify.py`）の
+    ②(i) 冷却／②(ii) 暗躍禁止の直撃と**同じロジック**を、決定時点で view（公開
+    history）から計算できる形に写したもの。b282 は事後に `state.phase_snapshots` の
+    前後差で判定するが、スナップショットは view に載らない＝公開イベントで置き換える。
+    置き場所が agents 側なのは規約どおり（agents→arena の依存を作らない＝
+    arena 側からここを import する向きは可）。
+
+    b282 との対応（写した点／必要だった適応。対応の実測検証＝tests/test_b286.py の
+    parity テスト＝本検出は b282 検出の**部分集合**で、板席は完全一致）：
+    - **②(ii) 直撃**＝「同日同対象に主人公の暗躍禁止 ∧ 置いた暗躍が実際に無効化」：
+      * 暗躍禁止が同ターン2枚以上＝暗躍禁止どうしの自滅（`engine/resolver.py`
+        `n_protagonist_kinshi >= 2`＝全体で数える）＝暗躍は通る＝数えない
+        （b282 はスナップショット差 delta で自動的に同じ結論になる）。
+      * 板＝行動解決の増分は公開イベントに載る（`sim/flow.py` event=="anyaku"・
+        phase=="action_resolution"・delta>0）＝イベントが**無い**＝無効化された。
+        カルティスト無視で通った席はイベントが載る＝数えない（b282 と同じ）。
+      * キャラ＝行動解決の増分は公開イベントに**載らない**（sim/flow.py:314 注記）＝
+        カルティスト生存中は「無視で通った」可能性を view から排除できない＝
+        **数えない**（保守側＝「降りない」方に倒す＝B-281 の教訓と同じ向き）。
+      * ★「折られた実績」の閾値＝同一対象への直撃 **B286_BREAK_MIN(=2) 回以上**。
+        1回は囮/試し置き（D1 の意図的な `+2` 食わせ）と区別できない＝数えない
+        （機序検死＝btx5_seal_cat#0。B-279(c) の 96.7% は2回目以降の再置の話）。
+      * 対象の限定＝キャラ席＋**勝ち筋の板**（ゴール板／病院の事件が予定なら病院）。
+        ★ゴール外の板＝ダミー配置（M1b 複線演出）が機能した席＝「折られた」に
+        **数えない**（b282 の null_decoy と同じ扱い・§72-104(a) で「直す対象では
+        ない」と裁定済みの機能を壊さない）。
+    - **②(i) 冷却**＝「主人公が犯人の不安を除去した実績」：b282 `_unrest_flows` と
+      同じイベント語彙で r / pump を数える（r＝主人公の不安-1札＋goodwill_ability の
+      unrest 減／pump＝脚本家の不安+1札＋mastermind_ability・incident の unrest 増＋
+      学者特性）。b282 は事件日の事後に「除去が無ければ届いていた」まで判定するが、
+      決定時点では事件は未来＝**実績そのもの（r>=1 ∧ pump>=1）**を冷却の実績とする。
+
+    返り値＝{"broken_seats": {(kind, target), ...},   # ②(ii) 直撃の実績がある席
+             "cooled": {culprit, ...},                # ②(i) 冷却の実績がある犯人
+             "flows": {culprit: {"r": int, "pump": int}}}  # 出入りの生値（未使用判定用）
+
+    ──────────────────────────────────────────────────────────────────
+    ★事前登録（B-286 の合格基準＝最初のコミットで固定・§72-114）：
+      第1層（主）＝b282 分類器の before/after で
+        (i) ループ内再置席（同ループ内で、折られた席と同一対象への再置がまた
+            折られた席）＝基準 3日級130／5日級139（perm=id）が**減る**。
+        (ii) s1a（未使用拮抗線を残した負けループ）＝基準 104／38（perm=id）が**減る**。
+      第2層（従）＝脚本家が取ったループ総数 Σ(min(ltw,9)−1) が perm4条件×両日級の
+        8条件で**悪化しない ∧ 1条件以上で改善**（基準＝3日級 id285/rev250/h1225/
+        rot1288・5日級 id197/rev174/h1224/rot1201）。
+      第3層＝perm 4条件で符号一致。
+      副作用の番人＝複線演出の(a)143席・mm_lint D1〜D6 が**増えない**。
+      OFF＝ベンチ2本が正典と bit 一致（3日級 133/fb7 3.036・5日級 73/fb7 3.462）。
+    ──────────────────────────────────────────────────────────────────
+    """
+    day = view.get("day", 1)
+    loop = view.get("loop", 1)
+    hist = view.get("history", ()) or ()
+    # ゴール板（b282 `_goal_boards_for_loop` の写し。ボードX の実値は view に公開済み）
+    ry = view.get("rule_y")
+    if ry == "守るべき場所":
+        goal = {"学校"}
+    elif ry == "封印されしモノ":
+        goal = {"神社"}
+    elif ry in ("復讐者の灯火", "巨大時限爆弾Xの存在"):
+        bx = view.get("rule_y_board_x")
+        goal = {bx} if bx else set()
+    else:
+        goal = set()
+    relevant = set(goal)
+    if any(i.get("name") == "病院の事件" for i in view.get("incidents", ())):
+        relevant.add("病院")
+    roles = view.get("roles") or {}
+    cultist = next((n for n, r in roles.items() if r == "カルティスト"), None)
+    cultist_alive = bool(cultist) and any(
+        c.get("name") == cultist and c.get("alive")
+        for c in view.get("characters", ()))
+
+    # --- ②(ii) 直撃（席単位→対象単位の実績数） ---
+    # ★B-287：mem=True なら全ループ累積で数える（passed のキーに loop を含める＝
+    #   別ループの同日同対象の「通った」実績で今ループの直撃を誤って消さない）。
+    #   mem=False では loop==今ループに限る＝キーの loop 次元は定数＝従来と同値。
+    # ★§72-119：既定呼び（loop_memory=None）は日数ゲート（5日級限定）を通す。
+    #   明示指定（True/False）は計測用の検出定義の固定＝ゲートより優先。
+    mem = ((HeuristicMastermind.B287_LOOP_MEMORY and _b287_days_ok(view))
+           if loop_memory is None else bool(loop_memory))
+    passed = {(e.get("loop"), e.get("day"), e.get("target")) for e in hist
+              if (mem or e.get("loop") == loop) and e.get("event") == "anyaku"
+              and e.get("phase") == "action_resolution" and e.get("delta", 0) > 0}
+    hits: dict[tuple[str, str], int] = {}
+    for e in hist:
+        if e.get("event") != "cards_revealed":
+            continue
+        if not mem and e.get("loop") != loop:
+            continue
+        pls = e.get("placements", ()) or ()
+        kin = [p for p in pls if p.get("owner") != "mastermind"
+               and p.get("card") == "暗躍禁止"]
+        if len(kin) != 1:
+            continue        # 0＝妨害なし／2枚以上＝自滅（resolver）＝暗躍は通る
+        ktgt, kkind = kin[0].get("target"), kin[0].get("target_kind")
+        if not any(p.get("owner") == "mastermind" and p.get("card") in _ANRYAKU_VALUE
+                   and p.get("target") == ktgt and p.get("target_kind") == kkind
+                   for p in pls):
+            continue        # 同日同対象に自分の暗躍札が無い＝直撃ではない
+        if kkind == "board":
+            if (ktgt in relevant
+                    and (e.get("loop"), e.get("day"), ktgt) not in passed):
+                hits[("board", ktgt)] = hits.get(("board", ktgt), 0) + 1
+        elif kkind == "character" and not cultist_alive:
+            hits[("character", ktgt)] = hits.get(("character", ktgt), 0) + 1
+    # ★「折られた実績」＝同一対象への直撃 **2回以上**（B286_BREAK_MIN）。
+    #   1回の直撃は囮/試し置きと区別できない：実測の反例＝btx5_seal_cat#0（5日級 id）は
+    #   「D1 に `暗躍+2→神社` を相手の暗躍禁止に**意図的に**食わせ、D2 以降はダミーで
+    #   誘導して `+1→神社` を毎日通す」勝ちパターンで、1回で降りると mm の完勝
+    #   （L8 fb）が防衛（L4）に崩れた（本レーンの機序検死）。2回目以降の直撃＝
+    #   系統的な守り（B-279(c)＝再置がまた折られる率 96.7% は再置＝2回目以降の話）。
+    broken = {k for k, n in hits.items() if n >= HeuristicMastermind.B286_BREAK_MIN}
+
+    # --- ②(i) 冷却（犯人単位・今日以降に事件が残る犯人だけ＝生きている線） ---
+    live = {i["culprit"] for i in view.get("incidents", ())
+            if i.get("day", 0) >= day and i.get("culprit")}
+    flows: dict[str, dict] = {cn: {"r": 0, "pump": 0} for cn in sorted(live)}
+    for e in hist:
+        if e.get("loop") != loop:
+            continue
+        ev = e.get("event")
+        if ev == "cards_revealed":
+            for p in e.get("placements", ()) or ():
+                cn = p.get("target")
+                if cn not in flows or p.get("target_kind") != "character":
+                    continue
+                if p.get("card") == "不安-1" and p.get("owner") != "mastermind":
+                    flows[cn]["r"] += 1
+                elif p.get("owner") == "mastermind" and p.get("card") == "不安+1":
+                    flows[cn]["pump"] += 1
+        elif ev == "unrest" and e.get("target") in flows:
+            ph, dl = e.get("phase"), e.get("delta", 0)
+            if ph == "goodwill_ability" and dl < 0:
+                flows[e["target"]]["r"] += -dl
+            elif ph in ("mastermind_ability", "incident") and dl > 0:
+                flows[e["target"]]["pump"] += dl
+        elif (ev == "scholar_trait" and e.get("counter") == "不安"
+              and "学者" in flows):
+            flows["学者"]["pump"] += 1
+    cooled = set()
+    _cs = {c.get("name"): c for c in view.get("characters", ())}
+    for cn, f in flows.items():
+        th = unrest_threshold_of(cn)
+        c0 = _cs.get(cn)
+        # ★b282 の shortfall（u < th・犯人生存）の鏡像＝**今なお臨界未満**の犯人だけ。
+        #   臨界到達済みの犯人は線が「折られている」のではなく勝っている＝
+        #   A-63 の押し切り（臨界後の同日ペア押し）を誤って減点しないための必須ゲート。
+        if not (c0 and c0.get("alive") and th is not None and th >= 1
+                and c0.get("unrest", 0) < th):
+            continue
+        if f["r"] >= 1 and f["pump"] >= 1:
+            cooled.add(cn)
+    return {"broken_seats": broken, "cooled": cooled, "flows": flows}
+
+
+def _b286_sig_memo(view: dict, memo: dict | None, *,
+                   loop_memory: bool | None = None) -> dict:
+    """`b286_line_signals` の**決定内メモ**（小粒整理・2026-09-06）。
+
+    1決定（`_analyze` 1回）の中で同一 view に対して `b286_line_signals` が
+    2パス経路では最大5回（`_analyze` の遠隔殺人緩和 1＋`_analyze_impl` 2パス×
+    〔既定呼び／`loop_memory=False`〕2＝実測 BTX5d seed0/8）走り、毎回 history を
+    全走査していた。返り値は view と `loop_memory` だけで決まる純関数＝**同じ引数なら
+    同じ結果**なので、`_analyze` が作った memo（`{loop_memory: 結果}`）に載せて
+    使い回す＝5回→2回（単パス経路は元から2回＝2変種は別物なので下限）。
+    ★決定性・返り値は不変（memo は `_analyze` 1回ごとに新規＝決定をまたいで
+    持ち越さない。`memo=None` なら従来どおり毎回計算）。返り値の set は
+    下流で読むだけ（変異しない）＝共有しても安全。
+    """
+    if memo is not None and loop_memory in memo:
+        return memo[loop_memory]
+    sig = b286_line_signals(view, loop_memory=loop_memory)
+    if memo is not None:
+        memo[loop_memory] = sig
+    return sig
 
 
 class HeuristicMastermind:
@@ -775,6 +1056,617 @@ class HeuristicMastermind:
     _B214_CARD_PREF = ("不安+1", "不安-1", "不安禁止", "友好禁止",
                        "移動禁止", "移動斜め", "移動←→", "移動↑↓")
 
+    #: ★B-280：遠隔殺人の打点ゲートの「これから的を作れるか」を
+    #  **`暗躍+2` の残数**ではなく**事件日までの残り日数×暗躍札の供給**で数える切替口。
+    #
+    #  機序（B-279 (d) の実測）＝A-67／A-71 の緩和は二重に
+    #  `"暗躍+2" not in used_cards["mastermind"]` だけを見ていた（`_analyze` の2パス前段と
+    #  `_relax_ok` の中）。∴ **`暗躍+2` を板に切った瞬間**、まだ `暗躍+1` を複数日積めば
+    #  的（暗躍2）を作れる局面でも、遠隔殺人の筋が丸ごと打点会計から落ちていた。
+    #  ★`暗躍+1` は 1/loop **ではない**（`engine/models.py` ONCE_PER_LOOP＝
+    #    {移動斜め, 暗躍+2}）＝毎日セットできる＝2日あれば札だけで的が作れる。
+    #  ON＝`_remote_target_card_reach`（`_card_supply` と同じ式を事件日で切ったもの）で判定。
+    #  ★OFF＝従来の式をそのまま通る＝bit 単位で同一。
+    #  ★★既定 ON（2026-08-26・ユーザー裁定「B-281 を捨て B-280 を ON」＝§72-109）。
+    #    根拠＝第1層「打点ゲートが `暗躍+2` の残数だけで閉じた席」が **3日級 30→0**（perm 4条件すべて）／
+    #    副作用ゼロ（寄与しないボード暗躍143席・`mm_lint` D1〜D6 が8条件すべて完全不変）／
+    #    ★動機の局面（教材 L2D2）で `不安+1→医者` が 8.0→40.0＝ユーザーの処方の入口手を指すようになる。
+    #    ★**正直な但し書き**＝第2層（脚本家が取ったループ総数）は 8条件中2条件で −1
+    #    （`random_BTX#12` 5日級 id/rot1 の**1局のみ**・機序は §72-107 で完全解明済み）。
+    #    §72-104 のユーザー裁定「第1層＝主／第2層＝従」を明示的に適用して ON とした。
+    #    ★遠隔殺人の実発生は増えない（3日級 19→19／5日級 17→16）＝「打点会計が直った」≠「殺せた」。
+    B280_ANYAKU_HORIZON: bool = True
+
+    # ★B-286〔読まれた線から降りる〕（2026-08-28・§72-114・Phase B 本命）。
+    #   根拠＝§72-113 の負け方の地図：負け206局の96〜100%が「読まれて折られた」で、
+    #   核心は**折られた線に置き続け、未使用の拮抗線に乗り換えない**こと
+    #   （ループ内再置130/139席・s1a=未使用拮抗線を残した負けループ 104/38）。
+    #   検出＝`b286_line_signals`（モジュール関数・b282 ②(i)(ii) の写し・公開情報のみ）。
+    #   応答＝折られた実績のある線への**再置を減点**（`_b286_penalty`＝採点の出口1箇所・
+    #   A-54 と同じ配線）。★新しい価値表は作らない＝減点だけで、配分は既存の採点語彙
+    #   （set_unrest_today/future/killpath 等）が受け皿になる。
+    #   ★B-281 の教訓（§72-109＝前提が排他のときだけ正しい罠）＝**乗り換え先
+    #   （未使用の拮抗線）が実在するときだけ降りる**。無ければ折られていても最善の線
+    #   ＝続ける（alt_lines が空なら減点ゼロ）。
+    #   ★複線演出（M1b）を壊さない＝ダミー板は検出側で「折られた」に数えない
+    #   （b282 の null_decoy と同じ扱い）。
+    #: ★既定 OFF（OFF＝bit-for-bit 同一・番人テスト＝tests/test_b286.py）。
+    #: ★★既定 ON（2026-08-28・ユーザー裁定「既定 ON で land」＝§72-115）。
+    #:   根拠＝第2層（脚本家が取ったループ総数）が **8条件合計 +20・退行 flip ゼロ**
+    #:   （3日級 +4/0/0/+4・5日級 +5/0/+2/+5）／複線演出143席は完全不変／flip 全数5件すべて改善向き・機序解明済み。
+    #:   ★正直な未達＝s1a は不変（勝った局が分母から抜ける）／mm_lint D1 +1（D1+D2 計は純減・B-285 既知族）／
+    #:   ユーザー実戦2局では不発（実戦の反復はループ間＝B-279(c) の領分＝本切替口の射程外）。
+    #:   ON の正典値＝3日級 132/fb8・3.064／5日級 73/fb7・3.525（防衛数 −1 は脚本家の完勝1局＝§72-104 の評価軸では改善）。
+    B286_LINE_SWITCH: bool = True
+    #: 掃引口＝折られた線への再置の減点量。帯の設計＝盤線 funded（100+val×10）を
+    #  事件線の受け皿（set_unrest_killpath 92／today 60／future 40）より下へ落とせる幅。
+    B286_REPLACE_PENALTY: float = 60.0
+    #: 掃引口＝「折られた実績」と数えるのに要る同一対象への直撃回数（ループ内）。
+    #  1＝初回で降りる（実測で否決＝btx5_seal_cat#0 の D1 囮 `+2` パターンを壊す）／
+    #  2＝再置がまた折られてから降りる（B-279(c) の 96.7% の現場）。
+    B286_BREAK_MIN: int = 2
+    #: 掃引口＝キャラ席（②(ii) のキャラ対象）への再置減点。★既定 False：
+    #  8条件の flip 全数で、改善（BTX#8/BTX#1 3日/FS#8）は**すべて板席の減点**由来、
+    #  キャラ席の減点は退行のみ（random_FS#11 5日級 h1＝キラー線の暗躍を落として−1。
+    #  折られたキラー線も相手の暗躍禁止を1枚/T吸う拘束＝§1i の交換比）。検出は残す。
+    B286_CHAR_DESCENT: bool = False
+    #: 掃引口＝冷却実績（②(i)）の側にも再置減点を掛けるか。★実測で否決＝既定 False：
+    #  冷却戦は「折られた」ではなく**押し合いの最中**で、粘れば勝つ局が現にある
+    #  （機序検死＝random_BTX#0 5日級：L3 で冷却された遠隔殺人犯人への積みを落とし、
+    #  OFF なら取れていたループを失った）。検出（cooled の観測）は残す＝減点だけ既定OFF。
+    B286_COOL_DESCENT: bool = False
+
+    # ★B-287〔ループ間反復〕（計測フェーズ・§72-115「次の芽」・B-279(c) の361席）。
+    #   B-286 の②(ii) 直撃カウント（`b286_line_signals` の broken 判定）を**ループ境界を
+    #   越えて累積**する切替口。根拠＝B-279(c) の実測「前ループに暗躍禁止で潰された板へ
+    #   同じ日に同じ暗躍札を再置＝361席・96.7%が再び守られた」＋ユーザー実戦2局の
+    #   L2D1＝L1D1 型（§72-115 で B-286 の射程外と明記された領分）。
+    #   ON の挙動＝前ループまでの直撃も B286_BREAK_MIN(=2) の勘定に入る＝前ループで
+    #   2回折られた線はループ開始時点（D1）から broken＝再置が減点され、乗り換え先
+    #   （alt_lines＝ループ開始時点なら残り日数フル）が実在すれば降りる。
+    #   ★冷却（②(i)）と flows は今ループのみのまま（持ち越さない＝B286_COOL_DESCENT
+    #   否決と同じ機序＝冷却は押し合いの最中であって「折られた」ではない）。
+    #: ★★既定 ON・**5日級限定**（2026-08-29・ユーザー裁定＝§72-119。ゲート＝`_b287_days_ok`
+    #:   ＝`days_per_loop >= B287_MIN_DAYS(5)` の時のみ実効＝3日級・4日級は bit 不変）。
+    #:   根拠＝第2陣24条件：(ab) 併用が5日級 4perm 全正（id+23/rev+11/h1+4/rot1+17＝Σ+55）・
+    #:   囮の番人（非decoy）全条件 OFF と同値。3日級は全形で第2層符号不一致＝ゲートで遮断。
+    B287_LOOP_MEMORY: bool = True
+
+    # ★B-287 第2陣（2026-08-29・§72-118 ユーザー裁定「両案を対照で計測」）。
+    #   第1陣の実測＝現形（LOOP_MEMORY 単独）は 3日級で退行（revenge 族6局＝ループ頭から
+    #   降りる→乗り換え先の事件線が1ループで完成しない→出戻るが届かず二正面とも不完成・
+    #   mm_lint D2 が同所で増）／5日級は大幅改善（機序＝再置は続けつつ `暗躍+2` だけ
+    #   守られた正面から外す）。この2機序を切替口として分離する（3形＝(a)/(b)/(a)+(b)）。
+    #
+    # (a) 日数条件づけ＝broken 線から「降りる」（減点60を適用する）のは、乗り換え先
+    #   （alt_lines のいずれか）が**静的会計上そのループ内で完成する見込みが立つ時のみ**。
+    #   会計は**新設しない**＝reachable_culprits と同じ一次情報（臨界・現在の不安・事件日）を
+    #   B-280 `_remote_target_card_reach` と同じ切り方（**事件日で切る**＝事件日を過ぎた
+    #   不安は無意味＝D2 の機序そのもの）で、ただし供給は**1枚/ターン**（発注の指定＝
+    #   ミスリーダー楽観 mm_rate=2 を使わない・過小側に倒す）：
+    #       完成見込み ⇔ 臨界 − 現在の不安 ≤ 事件日 − 今日 + 1
+    #   会計が立つ乗り換え先が無ければ降りない＝従来どおり置く（alt_lines から除外）。
+    #: ★★既定 ON・5日級限定（§72-119＝B287_LOOP_MEMORY と同じ裁定・同じ日数ゲート）。
+    B287_DESCEND_FEASIBLE: bool = True
+    # (b) 切り札温存＝**ループ間の実績だけで** broken になった席（mem 由来席＝今ループ
+    #   単独では直撃 BREAK_MIN 未満）への再置自体は許す（減点60の全面適用はしない）が、
+    #   `暗躍+2`（1/loop の切り札）だけは守られた正面に置かない（減点60・`暗躍+1` 等への
+    #   差し替えは可＝線は捨てない）。★今ループ内で直撃2回の席は land 済み B-286 のまま
+    #   （全面降り）＝第1陣の退行機序（ループ頭からの全降り）だけを外す狭い述語。
+    #   切り札減点は alt_lines の有無を問わない（降りるのではなく札の出し先の話＝
+    #   B-281 の教訓〔乗り換え先が無ければ降りない〕と衝突しない）。
+    #   ★(a)+(b) 併用時＝完成会計の立つ乗り換え先があれば全面降り（(a) が優先）・
+    #   立たなければ残って切り札だけ温存（(b)）。
+    #: ★★既定 ON・5日級限定（§72-119＝B287_LOOP_MEMORY と同じ裁定・同じ日数ゲート）。
+    B287_SPARE_TRUMP: bool = True
+    #: ★B-287 の日数ゲートの閾値（§72-119）＝`days_per_loop` がこれ以上のループでのみ
+    #  B-287 の3口が実効。5＝5日級限定（実測域のみ）。計測時は probe が 0 に倒して
+    #  3日級でも発火させる（掃引の切替口＝定数直読みせずクラス属性経由）。
+    B287_MIN_DAYS: int = 5
+
+    # ★B-287 第3陣（2026-08-29 発注・3日級向け・計測フェーズ）＝(b) 温存述語の狭め：
+    #   `暗躍+2` を守られた正面から外すのは、**+2 の行き先に打点会計が立つ時だけ**。
+    #   行き先の会計＝**既存の帳簿だけ**で判定（新式を作らない・_analyze の
+    #   `_trump_sink` 参照）：
+    #   (i) 的づくり線＝未来の遠隔殺人で犯人が reachable_culprits に載っている
+    #       （payoff ゲート＝A-56②＋B-280 の札会計込み＝scorer が実際に資金化する線）
+    #   (ii) 別の生きた盤線＝goal_boards（ゴール板∪A-18 の事件日ゲート済み病院）の
+    #       うち broken でない板が実在する
+    #   立たなければ温存しない（＝+2 の再置も従来どおり許す）＝第2陣の退行機序
+    #   「revenge のボードX は +2 押しで今ループ完成する線＝温存が完成を遅らせる」を
+    #   弾くのが狙い（§72-119 第3陣）。
+    #: ★既定 OFF（OFF＝bit-for-bit 同一。land 判断はしない＝計測結果を FableA へ）。
+    B287_SPARE_VALUE_CHECK: bool = False
+
+    # ★B-288〔「降り」の席側の会計〕（2026-09-01・計測フェーズ・発注＝FableA／ユーザー裁定）。
+    #   発注の仮説＝「折られた線は**今ループ中に完成しうる**のに、まだ完成しない乗り換え先の
+    #   ために降りてしまう」＝これまでの2案（(a) 日数条件づけ・(b) 行き先の価値）がどちらも
+    #   **乗り換え先（行き先）だけ**を見ていたのに対し、**降りる側の席**を見る。
+    #
+    # ★★計測で分かったこと（`arena/b288_probe.py --census`・母集団＝ループ開始時点の
+    #   mem_extra 板席）：
+    #   (i) 発注どおりの**静的会計**（臨界2 − 現在値 ≤ 残ターン＝1枚/ターン、+2 なら1ターン）は
+    #       **5条件すべてで 100% 通る**（3日級 id 124/124・rev 96/96・h1 84/84・rot1 125/125・
+    #       4日級 id 36/36）＝**何も弾かない**＝(a) `B287_DESCEND_FEASIBLE` と同じ轍
+    #       （§72-119「ループ頭ではほぼ常に届く」）。ループ頭は板が全部 0・残ターンは3以上＝
+    #       どの板も「1ターンで届く」ことになるため。∴ この形は**実装しても off と同値**。
+    #   (ii) 一方、**反実の真値**（降りなかった対局でその板が実際にループ終了時 ≥2 へ届いたか）は
+    #       3日級 id 46.0%／rev 22.9%／h1 23.8%／rot1 46.4%／4日級 id 61.1%＝
+    #       「折られた線が今ループ完成する」ことは**現に起きている**（仮説は半分当たっている）。
+    #   ∴ 述語は「静的な見込み」ではなく**席側の公開実績**で立てる＝下の2形。
+    #
+    # 述語（新式を作らない＝卓上の公開カウンタの読み取りだけ）：
+    #   "prev" ＝ **直前ループ終了時**にその板が ≥2 だった（`loop_board` イベント＝
+    #             `evaluate_loop_end` が毎ループ公開する卓上のボード暗躍。view["history"] に既載）。
+    #   "ever" ＝ 過去いずれかのループ終了時に ≥2 だった（同じ材料の緩い版）。
+    #   "static" ＝ 発注どおりの静的会計（対照用）。★訂正（小粒整理 2026-09-06）＝「100% 通る＝OFF と
+    #   bit 一致」ではない。免除された席は broken_seats からも外れるため、static ON の実態は
+    #   「mem 由来席をすべて免除＝B-287 ループ間記憶を broken 判定から無効化する対照」（BTX 5日級
+    #   seed0-7 で OFF と 6/8 局が分岐・実測）。census の 100% はループ頭の母集団での値。
+    #   免除された席は broken_seats からも外れる＝**降りない・切り札も温存しない**＝
+    #   その席だけ B-287 適用前（従来）の挙動に戻る。
+    #: ★既定 OFF（OFF＝bit-for-bit 同一。land 判断はしない＝計測結果を FableA へ）。
+    B288_SEAT_COMPLETION_GUARD: bool = False
+    #: 述語の形（"prev" / "ever" / "static"）。既定は "prev"（相関が最も素直な形）。
+    B288_GUARD_MODE: str = "prev"
+
+    # ★B-289〔降りた後の配分〕（2026-09-02・発注＝FableA／ユーザー裁定 §72-125）。
+    #   出典＝§72-125 の物証＝`_b286_penalty` は**折られた席から引くだけ**で、
+    #   `alt_lines`（乗り換え先）へ**加点する経路が無い**＝降りた後の札は
+    #   「次に点の高い手」へ流れるだけ。∴ **降りるか否かには触らず**
+    #   （`broken_seats`／`alt_lines` の作り方＝B-286/B-287 の述語は1バイトも変えない）、
+    #   **減点が実際に発火した決定に限り**、乗り換え先へ配分を寄せる加点を1つだけ足す。
+    #
+    # ★★カード種の接地（設計上いちばん大事な点＝発注文の「暗躍札へ加点」からの意図的なずれ）：
+    #   `alt_lines` は `pump_targets` 由来の**犯人名**の集合＝拮抗線＝「犯人へ不安を積んで
+    #   臨界へ届かせる線」。線を進める札は `不安+1`（`MASTERMIND_HAND` に2枚）であって、
+    #   `暗躍+1/+2` は**犯人の不安を1も動かさない**＝「降りた暗躍札が alt_lines へ流れる」
+    #   経路はカード定義上そもそも存在しない（センサスの実測＝`arena/b289_probe.py`：
+    #   alt を狙える手のうち線を進める札は常に `不安+1`）。∴ 加点の対象は既定で `不安+1`。
+    #   発注文どおりの「暗躍札へ加点」は**対照**として `B289_ALT_SCOPE` で測れるようにしてある。
+    #: ★★加点の大きさ。**既定 ON＝40.0**（2026-09-02 ユーザー裁定＝5日級限定 land）。
+    #  実測の根拠（B-289 掃引・5日級80局）：
+    #   - 第1層＝「手が動いた決定」の配分 (i)alt が perm 6条件すべてで約5倍
+    #     （18/11/17/14/12/18 → 89/77/82/87/69/97）・埋め札 (iv) は純減。
+    #   - 第2層＝Σ(min(ltw,9)−1) の Δ が **perm 6条件すべて正**（+2/+3/+2/+2/+10/+4＝Σ+23）。
+    #   - 掃引の形＝20 は perm 全条件で負／**30〜60 がプラトー**（30 と 40 は id で bit 一致）
+    #     ＝代表値は 40（`B286_REPLACE_PENALTY=60` の 2/3・プラトー中央）。
+    #   - 番人＝複線演出の非decoy は完全不変。`mm_lint` は D1 が +4（id/rot1）だが、
+    #     全数検死で**増えた5手はすべて「加点が0点しか足していない決定」**（alt 対象でもない）
+    #     ＝加点の直接因果ではなく埋め札の置き先の入替。同一決定数での**無駄手の総量**
+    #     （D1+D2+D4+D5）の密度は**両perm とも微減**（15.28→15.09‰／16.39→16.20‰）。
+    #  ★0.0 に倒せば B-289 以前へ bit 復帰（明示 OFF の契約＝tests/test_b289.py）。
+    B289_ALT_BONUS: float = 40.0
+    #: 加点の対象カード種（"pump"＝不安札／"anyaku"＝暗躍札＝発注文どおりの対照／"both"）。
+    B289_ALT_SCOPE: str = "pump"
+    #: ★日数ゲート＝`days_per_loop >= B289_MIN_DAYS` のときだけ加点する。
+    #  理由＝実測（§B-289 掃引）で **3日級は減点の母集団がほぼゼロ**（perm 4条件中2条件で
+    #  発火0・残り2条件も1局12決定）＝加点は Σ第2層 を1も動かさなかった（4条件とも Δ0）。
+    #  ∴ 3日級・4日級では**発火させない**のが正しい射程。現状でも母集団ゼロゆえ bit 不変だが、
+    #  将来 B-287 の日数ゲートを3日級へ広げた時に B-289 が黙って発火しないための**明示の保険**。
+    #  ★`B287_MIN_DAYS` を流用せず**独立の定数**にする（切替口どうしの結合を作らない＝
+    #  片方を動かしたときに他方の射程が黙って変わる事故を防ぐ）。
+    B289_MIN_DAYS: int = 5
+
+    # ★B-291〔二正面の数え上げ＋拘束 `暗躍+1` の減点除外〕（2026-09-02・発注＝FableA）。
+    #   出典＝§72-129 の物証（`ランダムBTX5d_seed1` の L2D1 再生）＝降りの家族（B-286/287）の
+    #   減点が **`暗躍+1` にも掛かる**ため、折られた板への `暗躍+1`（＝拘束）が
+    #   素点110 → 50 に落ち、移動札(52) にすら負けて二正面が消えていた。
+    #   ★§1i 二正面ドクトリン（ユーザー正典 2026-07-23/24）＝
+    #     「バレたルートに圧を残しつつ、本命は読まれていない方法で急に通す」／
+    #     「`暗躍+2` は防がれうる場所に気軽に切らない」＝**+2 の減点は正しい／+1 の減点が誤り**。
+    #   ★A-57（同 2026-07-24）＝「打ち消されることを目的とした拘束は、その筋を捨ててから」
+    #     ＝**降りた（＝折られた）板への +1 は正当な拘束**。ただし「+1 連打」は中途半端＝
+    #     **拘束は1枚まで**（同一ループ内で同じ折られた席への2枚目以降は従来どおり減点）。
+    #: ★既定 OFF（OFF＝bit-for-bit 同一。land 判断はしない＝計測結果を FableA へ）。
+    #  ON の挙動＝`_b286_penalty` で `card == "暗躍+1"` の減点を免除する。ただし
+    #  **その席へ今ループ既に `B291_BAIT_MAX` 枚の `暗躍+1` を置いている**なら免除しない
+    #  （A-57 の連打ガード）。
+    #  射程は `_b286_penalty` の中だけ＝`B287_SPARE_TRUMP`（+2 の温存）・`B289_ALT_BONUS`・
+    #  降り判定（`broken_seats`／`alt_lines` の作り方）には1バイトも触れない。
+    B291_BAIT_EXEMPT: bool = False
+    #: ★A-57 の連打ガード＝**同一ループ内で同じ折られた席へ免除する `暗躍+1` の枚数の上限**。
+    #  既定 1＝「拘束は1枚まで」（2枚目以降は従来どおり減点）。**掃引口**＝0 に倒せば免除なし
+    #  （＝B-291 以前と同値）／大きな値に倒せば「何枚でも免除」＝A-57 の「+1 連打の中途半端」を
+    #  あえて許した対照が測れる（ガードがどれだけ射程を削っているかの物差し）。
+    #  ★int にしてあるのは era ピンの tier 規則（`arena/era_table.pins_from_diff`＝
+    #  収録後に増えた切替口が束に入るのは **bool True のときだけ**）に合わせるため
+    #  ＝`B287_MIN_DAYS`／`B289_MIN_DAYS` と同じ扱い＝**既定 OFF のプロトタイプで
+    #  牡丹教材のピン束を太らせない**（§72-127 の誤検出と同族の事故を避ける）。
+    #  ★構造的な帰結（実装から一意に出る・実測で確認）＝**ループ内で broken になった席は
+    #  必ず今ループの `暗躍+1` を1枚以上含む**（`暗躍+2` は 1/loop＝直撃2回のうち少なくとも
+    #  1回は `+1`）＝ガード ON では免除されない。∴ B-291 ON の射程は実質
+    #  **ループ間記憶（B-287 LOOP_MEMORY＝5日級限定）で broken になった席**だけ
+    #  ＝§72-129 の L2D1（L1 の3直撃で L2 頭から broken）がまさにその形。
+    #  3日級・4日級は日数ゲートで LOOP_MEMORY が閉じている＝**構造的に bit 不変**。
+    B291_BAIT_MAX: int = 1
+
+    #: ★B-284：暗躍札の供給上限を「**1つの対象へ何個積めるか**」で厳密化する切替口。
+    #
+    #  KB 接地（この3行が算術を一意に決める）：
+    #   - 脚本家の暗躍札は `暗躍+1` **1枚**と `暗躍+2` **1枚**だけ
+    #     （`rules/00_rules_core.md:92` 手札10枚／`rules/10_action_cards.md:38-39` の表／
+    #      現物確認済＝`engine/models.py:38-41 MASTERMIND_HAND`）。
+    #   - `暗躍+2` は 1/loop（`rules/10_action_cards.md:39`「暗躍+2 (1/loop)」・`:76`／
+    #     `engine/models.py:29-32 ONCE_PER_LOOP`）。`暗躍+1` は毎ターン手札に戻る。
+    #   - **同じプレイヤーは1キャラ／1ボードに2枚以上セットできない**
+    #     （`rules/10_action_cards.md:81`＝実装は `sim/legal.py:64` DUP_TARGET）。
+    #  ∴ **1つの対象**に注げる暗躍の上限は「残りターン数ぶんの札」＝
+    #     `days_left` 枚で、そのうち1枚を `暗躍+2` に替えられるだけ＝**`days_left + 1`**。
+    #     一方、**対象が2つ以上に散る**なら同じターンに `暗躍+1` と `暗躍+2` を
+    #     別々の対象へ置けるので、集約の上限は **`days_left + 2`** で正しい。
+    #
+    #  ON＝`_cap_reaching` の sink が**1本だけ**の部分集合（＝物理的に1つの対象）でだけ
+    #  `暗躍+2` の寄与を `min(2, dmax)` から `min(1, dmax)` に締める＝上限が `days_left + 1`。
+    #  複数 sink の部分集合は**触らない**（集約としては現行が正しい）。
+    #  ★OFF＝1バイトも通らない（bit-for-bit 同一）。land 判断はしない＝計測結果を FableA へ。
+    B284_SUPPLY_EXACT: bool = False
+
+    #: ★B-284 の対照（**計測専用**）：部分集合の大きさに関係なく一律 `min(1, dmax)` に締める
+    #  ＝起票文の (A)「`days_left + 1` にする」を文字どおり実装した形。
+    #  集約（sink 2本以上）では KB 上**過小**になるはずで、その差を数えるための対照。
+    B284_SUPPLY_FLAT1: bool = False
+
+    #: ★B-284 の **liveness 検査専用**（既定 OFF・land 対象外）：`_card_supply`
+    #  （A-73 のスカラー供給＝`agents/heuristic.py` の `_supply_of` の入口）に
+    #  巨大値を足して壊す。既定パラメータ（`supply_model=2` ⇒ `_alloc=1`）では
+    #  `_supply_of` は `_fits`/`_decoy_fits` から**呼ばれない**はずで、
+    #  ON にしてもベンチが bit 一致するなら「この式は決定に到達していない」の物証になる。
+    B284_LIVENESS_BREAK: bool = False
+
+    #: ★B-285〔臨界0への冷却の空振り〕の切替口（**既定 OFF＝1バイトも通らない**）。
+    #
+    #  KB 接地（この3行が「可否」を一意に決める＝価値の議論に踏み込まない）：
+    #   - 事件の発生条件は**2つだけ**＝(1) 犯人が生存 (2) 犯人に**不安臨界以上**の
+    #     不安カウンター（`rules/00_rules_core.md:119-122`）。
+    #   - 「不安臨界」＝**その値以上**の不安が置かれていれば条件を満たす
+    #     （`rules/00_rules_core.md:38`）。
+    #   - 黒猫の不安臨界は **0**＝「不安カウンターが無くても自身が犯人の事件の
+    #     発生条件を満たす」（`rules/30_characters.md:53` 表・`:77` 本文）。
+    #  ∴ 不安カウンターは0未満にならない（枚数）＝**臨界0の犯人に対しては
+    #     `不安-1` をいくら重ねても条件(2)を偽にできない**＝抑制モードの目的
+    #     （事件を不発にして情報の流出を抑える）は**原理的に達成不能**。
+    #
+    #  ON＝抑制モードの冷却（`set_cool_locked` / `ab_cool_locked`）のうち
+    #  **述語 `_b285_cool_is_inert` が真の席だけ**を採点から外す（それ以外の冷却は
+    #  従来どおり＝抑制モード自体は温存＝§72-104 (b) の「バグではない」裁定を壊さない）。
+    #  外れた席は後続の分岐へ素通しする（＝A-66 の理想filler 等が通常どおり採点する）。
+    #: ★★**既定 ON（2026-08-31・ユーザー裁定で land）**。False に倒すと B-285 以前へ bit 復帰。
+    #:   実測＝空振り席 5日級 20席→0（perm 4条件）・第2層 Δ0・flip 0・番人不変
+    #:   （3日級は該当席ゼロ＝bit 不変）。回帰＝`tests/test_b285.py`。
+    B285_SKIP_DEAD_COOL: bool = True
+
+    #: ★B-285 の **liveness 検査専用**（既定 OFF・land 対象外）：臨界0の対象への
+    #  抑制モード冷却にだけ巨大値を与える。ON にしてベンチが bit 一致するなら
+    #  「この席は決定に到達していない」の物証になる（B-284 の教訓＝起票の見立てが
+    #  指す行が実は決定に効いていないことがある）。
+    B285_LIVENESS_BREAK: bool = False
+
+    #: ★T8（2026-09-06・既定 ON）：**A.I. の発生判定を合算で数える**（脚本家側の帳簿）。
+    #  既定 ON（2026-09-06・§72-161＝両ベンチ bit 不変・KB 30:50 の A.I. 特性②）。
+    #  KB `rules/30_characters.md:50`＝A.I. 特性②「自身が犯人の事件の発生判定では、置かれている
+    #  **全てのカウンター**（友好・暗躍・護衛）を不安カウンターとしても扱う」。W4 で engine/sim の
+    #  可否判定は `engine.incident.effective_unrest_for_incident` に単一ソース化済みだが、本クラスの
+    #  到達判定（`reachable_culprits`／`fires_today`）と不安+1 の霧採点（「既に臨界」ゲート／
+    #  「残り解決回数で届かない」／「臨界到達の霧」）は**素の `unrest`** で数えていた＝A.I. 局で
+    #  (i) 合算では既に臨界の A.I. へ不安+1 を注ぎ続ける (ii) A.I. が犯人の到達判定が悲観側。
+    #  ON＝`_eff_unrest` が A.I. に限り engine と同じ算術で数える。A.I. 以外・OFF は素の `unrest`
+    #  ＝bit 同一。出所＝`docs/バックログ_構想メモ_FableA.md` §72-135（W4 レーン報告 §3）。
+    #  回帰＝`tests/test_t8_ai_effective_unrest.py`。
+    T8_AI_EFFECTIVE_UNREST: bool = True
+
+    #: ★T12（2026-09-06）：事件『流布』（`rules/40:153`＝任意1人から友好-2・別の任意1人に友好+2）の
+    #:  対象採点。従来は `_score_incident` の殺害系と同じ物差し（KP/フレンド/脅威…）で採点しており、
+    #:  **友好を読む唯一の敗北条件＝タイムトラベラー（`rules/50:128`＝最終日・友好≤2）**を見ていなかった
+    #:  ＝実害：`docs/feedback_logs/未来改変_BTX5d_seed11_ユーザー主人公_2026-09-06.jsonl` L3D5、
+    #:  手先（TT・友好3）から-2 でループ勝ちだったのに大物を選び、主人公勝利で終局。
+    #:  ON＝1枚目は「TT を敗北条件へ落とす／脅威の敷居を割る」、2枚目は「TT を避け無害な相手へ」。
+    #:  OFF＝従来の物差し（bit 不変）。★既定 ON（2026-09-06・ユーザー承認「T12,T13いいよ」・§72-169）：掃引＝
+    #:  3日級 130→129／5日級 69→68（flip は両方 `random_BTX#11`＝seed11 の同じ脚本＝流布で TT を敗北条件へ落とす
+    #:  規則どおりの勝ち＝A-4 先例〔rule-rational な脚本家側の強化は防衛減でも land〕・`docs/負け筋防御ツリー.md` 転記）。
+    #:  回帰＝`tests/test_t12_rumor_target.py`。
+    T12_RUMOR_TARGET: bool = True
+    #: T12 の重み表（★MM_PARAMS に足さない＝era 表の『収録後の差は追加だけ』を保つ。OFF なら読まれない）。
+    T12_RUMOR_WEIGHTS: dict[str, float] = {
+        #   1枚目（友好-2 の相手）：
+        "inc_rumor_tt_decisive": 200.0,   # 最終日・TT の友好が 3〜4＝-2 で敗北条件（≤2）に落ちる＝決定打
+        "inc_rumor_tt_nonfinal": 60.0,    # 非最終日・TT の友好≥1＝最終日までに積み直させる
+        "inc_rumor_tt_high": 30.0,        # TT の友好≥5＝-2 でも届かないが削る価値はある
+        "inc_rumor_threat_funded": 45.0,  # 脅威能力持ちで友好≥1（敷居を割る）
+        "inc_rumor_funded_other": 10.0,   # それ以外で友好≥1
+        "inc_rumor_zero": 1.0,            # 友好0＝空撃ち（他に候補が居れば避ける）
+        #   2枚目（友好+2 の相手）：
+        "inc_rumor_give_tt": 0.0,         # TT に足す＝敗北条件から遠ざける＝最悪
+        "inc_rumor_give_harmless": 60.0,  # 友好能力を持たないキャラ＝無害
+        "inc_rumor_give_refusable": 50.0, # 友好無視/絶対友好無視の役職＝拒否できる
+        "inc_rumor_give_unreachable": 40.0,  # +2 でもどの能力の敷居にも届かない
+        "inc_rumor_give_other": 20.0,
+        "inc_rumor_give_threat": 5.0,     # 脅威能力持ち＝敷居を割ってしまう
+    }
+
+    def _eff_unrest(self, c: dict | None, name: str | None = None) -> int:
+        """view の characters 要素（dict）を受け、発生判定で「不安」として数える値を返す。
+
+        A.I. かつ `T8_AI_EFFECTIVE_UNREST` が ON の時だけ engine 側
+        `effective_unrest_for_incident`（単一ソース）へ委譲する＝合算の算術をここで二重定義しない。
+        それ以外は素の `unrest`（OFF は従来と bit 同一）。`guard` は view に無ければ 0 扱い
+        （`sim/views.py:_public_char` が T8 で載せる）。
+        """
+        if not c:
+            return 0
+        u = c.get("unrest", 0)
+        if not self.T8_AI_EFFECTIVE_UNREST:
+            return u
+        nm = name if name is not None else c.get("name")
+        if nm != "A.I.":
+            return u
+        return effective_unrest_for_incident(SimpleNamespace(
+            name="A.I.", unrest=u, goodwill=c.get("goodwill", 0),
+            anyaku=c.get("anyaku", 0), guard=c.get("guard", 0)))
+
+    @staticmethod
+    def _b285_cool_is_inert(th, unrest: int, tgt: str,
+                            roles: dict | None, rule_xs) -> bool:
+        """その `不安-1` が **KB 上いかなる盤面効果も持たない**か（B-285 の述語）。
+
+        真を返す条件は「KB が一意に決める可否」だけで構成する：
+        1. **不安臨界が0**＝事件の発生条件(2)（`rules/00_rules_core.md:121`＝
+           「犯人の不安臨界**以上**の不安」・`:38`）は不安0でも成立する
+           （`rules/30_characters.md:53,77`）＝**冷却では事件を止められない**。
+           カウンターは0未満にならない（`rules/20_goodwill_abilities.md:228`＝
+           不安0の対象への「取り除く」宣言は空撃ちで可＝盤面は動かない）。
+        2. ★**妄想拡大ウイルスの逃がし**（A-25／`arena/mm_lint.py` D1 と同型の必須ガード）：
+           `rules/50_basic_tragedy_x.md:79,81`＝元役職パーソンは不安**3以上**で
+           シリアルキラーへ変化し、**1以下**で解除（不安2は直前状態を維持）。
+           ∴ 不安が **2以上**の元パーソンを冷やす手は、解除の側へ盤面を動かしうる
+           ＝「効果が無い」とは KB から**言えない**＝述語から外す（迷ったら言えない側）。
+           不安1→0 は「1以下」の帯の中の移動＝SK 状態を変えられない＝残す。
+
+        ★「事件を止められる筋」の完全列挙（KB の発生条件を読み切った結果）＝
+           (i) 犯人の死亡／盤上不在（`rules/00_rules_core.md:120`・`sim/effects.py:364`）
+           (ii) 手先の友好能力（`rules/20`＝犯人が手先の時だけ）
+           (iii) アルバイト？への犯人性の継承（`rules/30` 特性）
+           ——**どれも `不安-1` では到達できない**＝臨界0の犯人の事件を冷却で止める経路は無い。
+        ★不安が事件以外で読まれる箇所（＝「盤面効果ゼロ」を崩しうる残りの筋）＝
+           妄想拡大ウイルス（上の 2. で除外済み）／メインラバーズの主人公殺害
+           （`rules/50_basic_tragedy_x.md:159-160`＝不安3以上∧暗躍1以上）／
+           カウンターを動かす友好能力（鑑識官・ご神木・学者＝1個あるか0個かで移せるかが変わる）。
+           現行コーパスでは**臨界0キャラがメインラバーズに配役された脚本は0本**（実測）
+           ＝未踏の残余として申し送る（land するならここに同型ガードを足すか要検討）。
+        """
+        if th != 0:
+            return False
+        if ("妄想拡大ウイルス" in set(rule_xs or ())
+                and (roles or {}).get(tgt, "パーソン") == "パーソン"
+                and unrest >= 2):
+            return False
+        return True
+
+    #: ★B-293〔動けない対象への移動札を候補から外す〕の切替口（**既定 OFF＝1バイトも通らない**）。
+    #
+    #  出典＝実戦 `docs/feedback_logs/ランダムBTX5d_seed1_ユーザー主人公_2026-09-02.jsonl`
+    #  の L1D4・L1D5＝`移動↑↓→女の子` が2ターン連続で置かれ `move_blocked` が2件。
+    #  女の子は禁止3エリア（病院・神社・都市）＝**規則上どこにも動けない**。
+    #
+    #  KB 接地（この2行が「可否」を一意に決める＝価値の議論に踏み込まない）：
+    #   - 禁止エリア＝そのキャラが**移動できない**ボード（`rules/00_rules_core.md`
+    #     「キャラクターカードの見方」。移動の出所は問わない＝`sim/state.current_forbidden` の E-2）。
+    #   - 移動の解決＝同じ対象の移動札を**すべて合成**してから行き先を1回だけ判定し、
+    #     行き先が禁止エリアなら**移動せず留まる**（`engine/board.resolve_move`＝
+    #     `rules/60_faq.md` A-2 の直訳）。
+    #  ∴ 4エリアのうち**現在地以外の3つがすべて禁止**の対象は、どの移動札をどう合成しても
+    #     常に現在地に留まる＝その対象への移動札は**盤面をいっさい動かさない**。
+    #
+    #  ★★述語を「その札の行き先が禁止」ではなく「**対象が完全に動けない**」に狭めた理由
+    #    （発注書 §5 は前者だったが、後者でないと「KB が一意に決める」と言えない）：
+    #    移動は**合成してから1回だけ判定**される（上記）ので、単独の行き先が禁止でも
+    #    **主人公の移動札と重なると合成先が変わり、盤面が動く**。
+    #    例＝対象が `病院`・禁止が `{神社}` のとき、脚本家の `移動↑↓`（単独では神社＝不成立）は、
+    #    主人公の `移動←→` と重なると合成＝斜めになり `都市` へ行く（脚本家が置かなければ `学校`）。
+    #    ＝**その札は盤面を動かしている**＝「規則上の空振り」とは KB から**言えない**
+    #    （規約§7 判例「迷ったら言えない側に倒す」）。
+    #    数え上げ＝主人公が同じ対象に重ねられるのは1枚（`sim/legal._other_protagonist_targets`）
+    #    ＝合成相手 t は {なし, 移動←→, 移動↑↓} の3通り。どの札 c も「t の3通りすべてで
+    #    結果が変わらない」ためには**現在地以外の3エリアが全部禁止**であることが必要十分
+    #    （代数的に確認済み。1方向だけ禁止のキャラでは必ず反例 t がある）。
+    #    ∴ 発注書の広い版は別の切替口 `B293_SKIP_BLOCKED_DEST`（＝**価値側**・計測用）に分けた。
+    #
+    #  ON＝`_b293_move_is_void` が真の option を採点の出口で `_B293_VOID` に落とす
+    #  ＝**どの正の採点にも勝てない**＝実質的に候補から外れる。
+    #  ★option 列そのものは削らない（`_pick` の rng 消費列を変えない＝規約§11b の
+    #    「候補生成順を触る改修」を避ける＝OFF/ON の差を最小に保つ）。
+    #: ★★**既定 ON（2026-09-03・ユーザー裁定で land）**。False に倒すと B-293 以前へ bit 復帰。
+    #:   実測＝空振り席が **perm 4条件×3日/5日 の8条件すべてで 41→0**
+    #:   （3日 4/4/6/2・5日 1/1/8/15 → すべて 0）／外れた席の素点は全34席 3.0
+    #:   （`set_move_stray`＝filler 帯）＝積極的な移動の枝は1つも壊していない／
+    #:   第2層 Δ＝3日 +4/+4/−3/+6・5日 0/0/0/+7（Σ+18・7/8 条件で非負。3日 h1 の −3 は
+    #:   `random_BTX#1` 1局＝OFF の ltw が8条件で 2〜9 に散る同点帯の引き直し）／
+    #:   複線演出の非decoy は8条件すべて不変。回帰＝`tests/test_b293.py`。
+    B293_SKIP_IMMOBILE_MOVE: bool = True
+
+    #: ★B-293 の**広い版**（発注書 §5 の原文＝「その札の行き先が禁止エリア」で切る・
+    #  **計測専用**・既定 OFF）。上のコメントのとおり、これは KB が一意に決める空振りでは
+    #  ない（合成で盤面が動きうる）＝規約§7 の免除は主張できない＝通常ゲート案件。
+    #  対象は1方向だけ禁止の3体（巫女／サラリーマン／異世界人）に限られる。
+    B293_SKIP_BLOCKED_DEST: bool = False
+
+    def _b293_move_is_void(self, o: dict, view: dict) -> bool:
+        """その option が **B-293 で外す移動札**か（切替口が両方 OFF なら常に False）。
+
+        ★禁止エリアは必ず `sim.state.current_forbidden_from_view` から取る
+          （静的な `engine.data.forbidden_of` を直に引かない）＝
+          医者の友好能力3（入院患者の禁止解除）／女の子の友好能力1
+          （`rules/20_goodwill_abilities.md:77`）で**このループ中だけ解除**されている
+          局面で誤って外さないため。公開履歴の `forbidden_lifted` から再構成する
+          設計（＝神視点にならない）。
+        - 対象が盤上に居ない（`area` が None＝未登場の転校生・神格、死体）→ **False**
+          （＝外さない＝従来どおり）。そもそも `sim/legal._alive_char_targets` が
+          「生存かつ盤上」しか候補にしないので本番では到達しないが、
+          **判定できない材料が欠けている時は「言えない側」に倒す**（規約§7）。
+        """
+        if not (self.B293_SKIP_IMMOBILE_MOVE or self.B293_SKIP_BLOCKED_DEST):
+            return False
+        if o.get("target_kind") != "character" or o.get("card") not in MOVE_CARDS:
+            return False
+        tgt = o.get("target")
+        area = next((c.get("area") for c in (view.get("characters") or ())
+                     if c.get("name") == tgt), None)
+        if not area:
+            return False
+        forb = current_forbidden_from_view(view, tgt)
+        if not forb:
+            return False                      # 解除済み／元から禁止なし＝従来どおり
+        if self.B293_SKIP_IMMOBILE_MOVE and all(
+                _move_dest(area, c) in forb for c in MOVE_CARDS):
+            return True                       # 完全不動＝どの合成でも留まる（KB 一意）
+        if self.B293_SKIP_BLOCKED_DEST:
+            return _move_dest(area, o["card"]) in forb
+        return False
+
+    #: ★T7〔ミスリーダーを届く犯人から引き離さない〕（2026-09-05・§72-143 副産物／T5 検死
+    #  `random_BTX#11` 5日級 L3D1）。切替口＝ON で `_score_set` (4a2) に述語が入る。
+    #  OFF＝T7 導入前へ bit 復帰。
+    #  観測＝(4a2)「ミスリーダーを（届く）犯人のエリアへ寄せる移動」は `pump_targets`（届く犯人を
+    #  事件日順）を**先頭から**走査し、**今日の犯人が既に ML と同室**だと `cc["area"] != ml["area"]`
+    #  で読み飛ばして**次の（未来日の）犯人**へ向かう移動札に `set_move_misleader`=52.0 を出す。
+    #  採点は ML の**現在地に誰が居るか**を見ていない＝手先（D1 蝶の犯人・臨界1・u0=0）と
+    #  同室していた ML を D5 の犯人へ向けて引き離し、ML 能力（`rules/50:139`＝脚本家能力
+    #  フェイズに**同一エリア**のキャラへ不安+1）の当日供給を自分で切った
+    #  （主人公の `不安-1` にカードの +1 を相殺され、ML の +1 が無いので不発）。
+    #  述語＝`_t7_ml_anchor`：今日の事件の犯人が ML と同室・生存・臨界≥1・`unrest+1 >= th`
+    #  （ML の +1 で今日届く。臨界済みも含む＝主人公の `不安-1` への緩衝）・発生に価値がある
+    #  （`fires_today`＝A-38/B-118/A-56② の除外ゲート通過）なら、その犯人を「錨」と呼ぶ。
+    #  錨が有る局面では ML への移動札（＝どの札も現在地を離れる＝錨から離れる）に (4a2) の点を
+    #  出さず `set_move_stray`（filler 帯）へ落とす。錨が無い局面（ML が届く犯人と別室）は従来どおり。
+    #  ★ML 自身が今日の犯人なら錨にしない（ML は自身を対象に取れる＝`rules/50:140`＝移動しても
+    #    供給は切れない）。
+    #  ★本チケット外＝主人公に読まれて `移動禁止`/移動札で止められる筋・(4a-1)(4a0) 等 (4a2) 以外の
+    #    分岐が ML を動かす場合（価値の見直し＝通常ゲート案件）。
+    #  ★★**既定 ON（ユーザー裁定 2026-09-05・§72-148）**。False に倒すと T7 以前へ bit 復帰。
+    #    実測（§72-148）＝perm 8/8 非負・flip 6局は全数検死済み。回帰＝`tests/test_t7_supply_separation.py`。
+    T7_ML_KEEP_SUPPLY: bool = True
+
+    #: ★T7c〔錨例外＝寄せ先がメインラバーズ〕（2026-09-06・T7b/T7c 検死＝`random_BTX#7` 3日級）。
+    #  ★★**既定 ON（ユーザー裁定 2026-09-06・§72-157）**＝実測は random_BTX#7 3→4 のみ・5日級 bit 不変。
+    #  （価値の見直し＝通常ゲート案件・規約 §7 判例＝通常ゲートで land）。ON＝`_score_set` (4a2) で錨が
+    #  立っていても、寄せ先の（届く）犯人が**メインラバーズ**（脚本家は真の役職を知る＝`view["roles"]`）
+    #  で、既存の到達算術と同式 `u + mm_rate × days_left ≥ MAINLOVER_UNREST`（3＝`rules/50:160`）
+    #  なら `set_move_misleader`(52.0) を出す（判定＝`_t7c_lovers_dest_card`）。
+    #  機序＝錨（今日の事件の犯人）を守って ML を留めると、メインラバーズの不安3（ターン終了時の
+    #  主人公殺害＝`rules/50:160`）へ ML の +1/日を回せず、事件1本の発生と引き換えに主人公殺害の
+    #  線を捨てていた。錨以外の寄せ先には従来どおり stray（T7 の契約は保存）。
+    #  ★C1（暗躍→メインラバーズの同日資金化）は `rules/00_rules_core.md:102`（同一キャラに2枚以上は
+    #    不可）で原理的に不成立＝実装しない。
+    #  OFF＝T7 landed 挙動へ bit 復帰。`T7B_ANCHOR_COOL_CAP` とは独立（片方だけ ON にできる）。
+    T7C_ML_LOVERS_DEST: bool = True
+
+    #: ★T7b〔錨に主人公の見えている冷却容量を入れる〕（2026-09-06・同上検死の副案 V2）。
+    #  **既定 OFF＝棚上げ**（ユーザー裁定 2026-09-06・§72-157＝5日級で脚本家 −5）。
+    #  （価値の見直し＝通常ゲート案件）。ON＝`_t7_ml_anchor` の錨条件を
+    #      u0 + 1 − n_cool − c ≥ th
+    #  に締める。`n_cool`＝A-63 系 `_n_cool`（解禁済み「軽量不安除去」能力の本数・位置不問・
+    #  クラス不問＝`_analyze` の `a["n_cool"]`）／`c`＝`push_culprit == 錨`（A-63/A-77 が同日ペアで
+    #  押す席）なら 0、それ以外（押さない席）は 1＝主人公の冷却札（`不安-1`）1枚を無相殺で数える。
+    #  `_wipe`（カウンター全除去級の解禁＝`a["wipe"]`）なら錨を立てない。
+    #  機序＝ML の +1 だけで臨界に届く席でも、主人公の解禁済み冷却役＋冷却札で外される見込みなら
+    #  「錨を守って ML を留める」価値が無い＝T7 が (4a2) を潰す席を狭める。
+    #  OFF＝T7 landed 挙動へ bit 復帰（`n_cool`/`wipe` は読まれない）。`T7C_ML_LOVERS_DEST` とは独立。
+    T7B_ANCHOR_COOL_CAP: bool = False
+
+    def _t7_ml_anchor(self, a: dict, view: dict) -> str | None:
+        """T7 の錨＝「今日 ML の +1 で臨界に届く、ML と同室の犯人」の名前（無ければ None）。
+
+        切替口 OFF なら常に None（(4a2) は 1 ビットも動かない）。
+        材料は `_analyze` の既存会計（`misleader`/`today_culprit`/`fires_today`/`chars`）だけ
+        ＝供給の二重定義を作らない。
+        """
+        if not self.T7_ML_KEEP_SUPPLY:
+            return None
+        ml, culp = a.get("misleader"), a.get("today_culprit")
+        if not ml or not culp or culp == ml or not a.get("fires_today"):
+            return None
+        chars = a["chars"]
+        mlc, cc = chars.get(ml), chars.get(culp)
+        if not (mlc and cc and mlc.get("alive") and cc.get("alive")):
+            return None
+        if not mlc.get("area") or mlc.get("area") != cc.get("area"):
+            return None
+        th = unrest_threshold_of(culp)
+        if th is None or th < 1:
+            return None                       # 臨界0（黒猫）＝不安不要＝ML は要らない
+        if cc["unrest"] + 1 < th:
+            return None                       # +1 では今日届かない＝錨ではない
+        if self.T7B_ANCHOR_COOL_CAP:
+            # ★T7b（既定 OFF）：主人公の見えている冷却容量（解禁済み軽量不安除去 n_cool ＋
+            #   押さない席なら冷却札1枚）を差し引いても届く時だけ錨にする。全除去級なら錨なし。
+            if a.get("wipe"):
+                return None
+            _c = 0 if a.get("push_culprit") == culp else 1
+            if cc["unrest"] + 1 - int(a.get("n_cool", 0)) - _c < th:
+                return None
+        return culp
+
+    def _t7c_lovers_dest_card(self, a: dict, view: dict) -> str | None:
+        """T7c の錨例外＝錨が立っていても (4a2) の点を出してよい ML 移動札（無ければ None）。
+
+        切替口 OFF なら常に None（(4a2) は 1 ビットも動かない）。条件（すべて既存会計）：
+        寄せ先＝`mainlover`（`view["roles"]`＝脚本家は真の役職を知る）が `pump_targets`（届く犯人）
+        に載っている・生存・ML と別エリア・ML の禁止エリアでない・
+        `unrest + mm_rate × days_left ≥ MAINLOVER_UNREST`（既存の到達算術と同式・新しい表は作らない）。
+        返り値＝ML の現在地からその寄せ先へ 1 枚で行ける移動札（`_single_move_card`）。
+        """
+        if not self.T7C_ML_LOVERS_DEST:
+            return None
+        ml, mlv = a.get("misleader"), a.get("mainlover")
+        if not ml or not mlv or mlv == ml:
+            return None
+        if not any(c == mlv for _d, c in a["pump_targets"]):
+            return None
+        chars = a["chars"]
+        mlc, cc = chars.get(ml), chars.get(mlv)
+        if not (mlc and cc and cc.get("alive") and mlc.get("area") and cc.get("area")):
+            return None
+        if cc["area"] == mlc["area"]:
+            return None
+        if cc["unrest"] + a["mm_rate"] * a["days_left"] < MAINLOVER_UNREST:
+            return None
+        if cc["area"] in current_forbidden_from_view(view, ml):
+            return None
+        return _single_move_card(mlc["area"], cc["area"])
+
+    @staticmethod
+    def _remote_target_card_reach(view: dict, inc_day: int,
+                                  cur_anyaku: int = 0) -> bool:
+        """遠隔殺人の的（暗躍≥2）を**事件日までに暗躍札だけで作れるか**の上限評価。
+
+        会計は**新設しない**＝A-73 の `_card_supply`（＝残り日数 ＋ 2 if `暗躍+2` 未消費）を、
+        **ループ末ではなく事件日**で切って使う：
+
+            必要数   ＝ `REMOTE_MURDER_ANYAKU`(2) − 現在の暗躍
+            供給上限 ＝ (事件日 − 今日 + 1) ＋ (2 if `暗躍+2` 未消費 else 0)
+
+        KB 接地：
+        - 的の閾値＝`rules/40_first_steps.md:152`／`rules/50_basic_tragedy_x.md:209`
+          「暗躍カウンターが2つ以上置かれているキャラクター」＝`REMOTE_MURDER_ANYAKU`。
+        - `暗躍+1` は毎日手札に戻る／`暗躍+2` だけが 1/loop
+          （`rules/00_rules_core.md:108`／`engine/models.py` ONCE_PER_LOOP）。
+        - 事件日**当日**に置いた暗躍も間に合う＝行動解決（フェイズ4）は事件（フェイズ7）より前
+          （`rules/00_rules_core.md:103-113`）＝ゆえに今日を含めて数える。
+
+        ★**同じ式の鏡像が主人公側に既にある**＝`agents/defense_plan.lover_reaches_remote_target`
+          （B-201／B-207）。主人公AI は「mm は残り日数で暗躍2に届きうる」と数えているのに、
+          mm 自身の帳簿だけが `暗躍+2` の残数に張り付いていた。
+        ★これは**上限評価であって予測ではない**（暗躍禁止での遮断・クロマク／事件由来の供給は
+          数えない＝過小側に倒す）。狭さは呼び出し側（利得対象の生存・遠隔殺人の予定）が担う。
+        """
+        need = REMOTE_MURDER_ANYAKU - int(cur_anyaku or 0)
+        if need <= 0:
+            return True
+        turns = max(0, int(inc_day) - int(view["day"]) + 1)
+        p2_left = ("暗躍+2" not in (view.get("used_cards", {})
+                                    .get("mastermind", []) or []))
+        return need <= turns + (2 if p2_left else 0)
+
     @property
     def wants_bluff_options(self) -> bool:
         """`sim/flow` への申告＝脚本家の set_card 候補に allow_bluff を開いてほしいか。"""
@@ -809,8 +1701,17 @@ class HeuristicMastermind:
         # 緩和が意味を持ちうる局面だけ2パスにする（コスト抑制＝それ以外は単パスと同一結果）
         _p2_left0 = ("暗躍+2" not in (view.get("used_cards", {})
                                       .get("mastermind", []) or []))
-        if not (_p2_left0 and any(i["name"] == "遠隔殺人" and i["day"] >= view["day"]
-                                  for i in view["incidents"])):
+        if self.B280_ANYAKU_HORIZON:
+            # ★B-280：前段も「札で的を作れるか」で開く（下の `_relax_ok` と同一判定＝
+            #   前段だけ閉じて単パスへ落ちる不整合を作らない）。
+            _open0 = any(i["name"] == "遠隔殺人" and i["day"] >= view["day"]
+                         and self._remote_target_card_reach(view, i["day"])
+                         for i in view["incidents"])
+        else:
+            _open0 = (_p2_left0 and any(i["name"] == "遠隔殺人"
+                                        and i["day"] >= view["day"]
+                                        for i in view["incidents"]))
+        if not _open0:
             return self._analyze_impl(view)
         _roles0 = view["roles"]
         _chars0 = {c["name"]: c for c in view["characters"]}
@@ -825,7 +1726,8 @@ class HeuristicMastermind:
             return self._analyze_impl(view)
         if self.p["payoff_relax_all"]:
             return self._analyze_impl(view, _relax=_cand)   # 広い版（負の対照）
-        opt = self._analyze_impl(view, _relax=_cand)        # ①楽観パス
+        _sigs: dict = {}      # b286_line_signals の決定内メモ（`_b286_sig_memo`）
+        opt = self._analyze_impl(view, _relax=_cand, _sigs=_sigs)   # ①楽観パス
         _f = opt["funded"]
         relax: set[str] = set()
         if "friend" in _f and opt.get("friend_target"):
@@ -837,9 +1739,28 @@ class HeuristicMastermind:
         if (self.p["payoff_unified_additive"] and self.p["role_effect_paths"]
                 and _lv0 and _mlv0 and _chars0.get(_mlv0, {}).get("alive")):
             relax.add(_lv0)          # A-67 landed の無条件ラバーズ緩和を保持（加算的適用）
-        return self._analyze_impl(view, _relax=relax & _cand)   # ②本計算
+        # ★B-286（ON時のみ・狭い述語）：ゴール板の線が折られた実績
+        #   （直撃 B286_BREAK_MIN 回以上）を持つとき、遠隔殺人の的の緩和を候補全員に開く。
+        #   ★実績の数え方は既定呼び `b286_line_signals(view)` に従う＝B-287 land 後
+        #   （`B287_LOOP_MEMORY` 既定 ON・`_b287_days_ok`＝5日級限定）は**前ループまでの
+        #   直撃も累積**する＝5日級ではループ頭（D1）から折られた扱いになりうる。
+        #   3日級・4日級は日数ゲートで従来どおり**今ループのみ**（bit 不変）。
+        #   機序（fs5_guard 10 seed 同型＝§72-113 の代表）＝乗り換え先の事件線
+        #   （D4 遠隔殺人）が A-56② の的ゲートで帳簿から落ちており（killer 不在＝
+        #   kp パス未資金化＝2パスの緩和が KP へ降りない）、板が折られても降り先が
+        #   「実在しない」ことになっていた＝B-283 の「入口不作為」の根と同じ穴。
+        #   折られたループに限り、既存の緩和機構（_relax_ok＝B-280 の札会計で狭さを
+        #   担保）へ候補を渡すだけ＝新しい価値表は作らない（受け皿は既存の採点帯＝
+        #   set_unrest_today/future と set_kp_unfunded 等）。
+        if self.B286_LINE_SWITCH:
+            _sig0 = _b286_sig_memo(view, _sigs)
+            if any(_k == "board" for _k, _t in _sig0["broken_seats"]):
+                relax |= _cand
+        return self._analyze_impl(view, _relax=relax & _cand,
+                                  _sigs=_sigs)                  # ②本計算
 
-    def _analyze_impl(self, view: dict, _relax: set[str] | None = None) -> dict:
+    def _analyze_impl(self, view: dict, _relax: set[str] | None = None,
+                      _sigs: dict | None = None) -> dict:
         roles = view["roles"]
         chars = {c["name"]: c for c in view["characters"]}
         keyperson = next((n for n, r in roles.items() if r == "キーパーソン"), None)
@@ -956,8 +1877,8 @@ class HeuristicMastermind:
                     return True         # 盤面未確定（loop_start等）＝保守側（旧挙動）
                 if _ja == _ca:
                     return True         # 既に同エリア＝従者追随（30:65）で粘着＝見込みあり
-                _meet = (({_ja} | (set(AREAS) - forbidden_of("従者")))
-                         & ({_ca} | (set(AREAS) - forbidden_of(cn))))
+                _meet = (({_ja} | (set(AREAS) - current_forbidden_from_view(view, "従者")))
+                         & ({_ca} | (set(AREAS) - current_forbidden_from_view(view, cn))))
                 if not _meet:
                     return False        # (a) 会えるエリアが無い＝会計上不可能
                 for _e in view.get("history", ()) or ():
@@ -1043,7 +1964,15 @@ class HeuristicMastermind:
                 _lv2 = next((n for n, r in roles.items() if r == "ラバーズ"), None)
 
                 def _relax_ok(t: str) -> bool:
-                    if not (self.p["role_effect_paths"] and _p2_left):
+                    if not self.p["role_effect_paths"]:
+                        return False
+                    if self.B280_ANYAKU_HORIZON:
+                        # ★B-280：「1枚（暗躍+2）で作れるか」ではなく
+                        #   「**事件日までに札で作れるか**」を数える（式＝`_card_supply` の鏡像）。
+                        if not self._remote_target_card_reach(
+                                view, cd, chars.get(t, {}).get("anyaku", 0)):
+                            return False
+                    elif not _p2_left:
                         return False
                     if _relax is not None:
                         return t in _relax
@@ -1088,7 +2017,9 @@ class HeuristicMastermind:
                 rate = 1 if (mlc and mlc.get("alive") and cc.get("area")
                              and mlc.get("area") == cc["area"]) else 0
             unrest_supply[cn] = max(unrest_supply.get(cn, 0.0), float(rate * turns))
-            if cc["unrest"] < th and cc["unrest"] + rate * turns >= th:
+            # ★T8：A.I. は合算（`_eff_unrest`・既定 ON＝A.I. 以外／明示 OFF は素の unrest）。
+            _cu0 = self._eff_unrest(cc, cn)
+            if _cu0 < th and _cu0 + rate * turns >= th:
                 reachable_culprits.add(cn)
                 pump_targets.append((cd, cn))
         pump_targets.sort()
@@ -1116,7 +2047,8 @@ class HeuristicMastermind:
             _tc = chars.get(today_culprit)
             _tth = unrest_threshold_of(today_culprit)
             if _tc and _tc["alive"] and _tth is not None and (
-                    _tc["unrest"] >= _tth or today_culprit in reachable_culprits):
+                    self._eff_unrest(_tc, today_culprit) >= _tth   # ★T8：A.I. は合算
+                    or today_culprit in reachable_culprits):
                 fires_today = True
 
         # ★A-63（2026-07-27・目視検死『蝶レース再審』）：事件日の押し切り会計。
@@ -1531,9 +2463,15 @@ class HeuristicMastermind:
         _p2_left_s = ("暗躍+2" not in (view.get("used_cards", {})
                                        .get("mastermind", []) or []))
         _card_supply = days_left + (2 if _p2_left_s else 0)
+        if self.B284_LIVENESS_BREAK:            # ★B-284 検査専用（既定 OFF＝bit 不変）
+            _card_supply += 1000
         _km_c = chars.get(kuromaku) if kuromaku else None
         _km_alive = bool(_km_c and _km_c.get("alive"))
-        _km_forbid = forbidden_of(kuromaku) if _km_alive else set()
+        # ★T2（2026-09-04）：到達可否の禁止エリアは B-293/W3 と同じ公開情報版
+        #   `sim.state.current_forbidden_from_view`（このループの `forbidden_lifted` を反映）で
+        #   取る＝解除中のクロマクの供給を「立てない」と誤会計しない。以下の移動系
+        #   到達可否（_board_thin／_score_set (4-bx)(4)(4a-*)(4b)）も同じ取得元。
+        _km_forbid = current_forbidden_from_view(view, kuromaku) if _km_alive else set()
         _rumor_left = (("不穏な噂" in {view.get("rule_x"), view.get("rule_x2")})
                        and not view.get("rumor_used", False))
         _inc_board = _inc_char = _inc_shrine = 0
@@ -1734,7 +2672,15 @@ class HeuristicMastermind:
             if _p2_left_s:
                 # 暗躍+2 は**札1枚＝1つの対象**にしか置けない（分割不可）＝流せるのは
                 # 高々「最大需要の1本ぶん」。KB: 10 暗躍+2 (1/loop)。
-                cap += min(2.0, dmax)
+                if self.B284_SUPPLY_FLAT1 or (
+                        self.B284_SUPPLY_EXACT and len(items) == 1):
+                    # ★B-284（既定 OFF）：sink が1本＝**1つの対象**＝同一対象への
+                    #   重ね置き不可（KB: `rules/10_action_cards.md:81`）ゆえ、
+                    #   置ける札は残り `days_left` 枚＝そのうち1枚を +2 に替えるだけ
+                    #   ＝上限 `days_left + 1`（＝寄与は +1 ぶん）。
+                    cap += min(1.0, dmax)
+                else:
+                    cap += min(2.0, dmax)
             cap += _km_cap(sinks)
             _bd = [d for d, s in items if s["kind"] == "board"]
             if _bd:
@@ -1748,6 +2694,14 @@ class HeuristicMastermind:
                 cap += min(float(_inc_shrine), max(_sh))  # 邪気の汚染＝神社限定（KB: 50:199）
             if any(s["kind"] == "char" for s in sinks):
                 cap += float(_inc_char)                  # 不安拡大＝キャラ限定（KB: 50:196）
+            if B284_PROBE is not None:      # 計測フック（既定 None＝本番経路は無変更）
+                _cap_x = cap
+                if _p2_left_s and len(items) == 1:
+                    # 厳密値＝単一対象なら +2 の寄与は「+1 ぶん」しかない
+                    _cap_x = cap - min(2.0, dmax) + min(1.0, dmax)
+                B284_PROBE(view, len(items), dmax,
+                           sum(d for d, _s in items), days_left, _p2_left_s,
+                           cap, _cap_x)
             return cap
 
         def _feasible(items) -> bool:
@@ -1806,7 +2760,7 @@ class HeuristicMastermind:
                     (_cu and _cu.get("alive"))
                     or (_km and _km.get("alive")
                         and (_km.get("area") in goal_boards
-                             or any(g not in forbidden_of(kuromaku) for g in goal_boards))))
+                             or any(g not in current_forbidden_from_view(view, kuromaku) for g in goal_boards))))
                 _board_thin = not _has_pen
             _blocked = (board_guarded or kp_blocked or killer_guarded or _board_thin)
             if _classic and not _blocked:
@@ -2010,7 +2964,79 @@ class HeuristicMastermind:
             or ("大物" if "大物" in chars else None)
         oomono_territory = view.get("oomono_territory") if oomono else None
 
+        # ★B-286（既定 OFF＝この分岐ごと走らない＝OFF は bit-for-bit 不変）：
+        #   拮抗線＝「未使用（今ループ pump=0 かつ r=0）の、静的会計で臨界に届く事件線」
+        #   ＝既存の reachable 会計（pump_targets）を**そのまま**使う（新しい表を発明しない。
+        #   s1a の「静的会計で臨界に届く」の mm 側の鏡像＝reachable_culprits）。
+        b286 = None
+        if self.B286_LINE_SWITCH:
+            _sig = _b286_sig_memo(view, _sigs)
+            # ★臨界1以上に限る＝「投資を受けられる線」だけが乗り換え先。
+            #   臨界0（黒猫）の事件は不安の置き場が無い＝降り先の実体がない
+            #   （機序検死＝random_BTX#3 5日級：L5 で神社が折られた際、臨界0の
+            #   黒猫〔流布〕を「未使用の拮抗線」と誤認して降り、mm の完勝が崩れた）。
+            _alt = {cn for _cd, cn in pump_targets
+                    if (unrest_threshold_of(cn) or 0) >= 1
+                    and _sig["flows"].get(cn, {}).get("pump", 0) == 0
+                    and _sig["flows"].get(cn, {}).get("r", 0) == 0}
+            # ★B-287(a)：完成会計の立つ乗り換え先だけを残す（既定 OFF＝素通し）。
+            #   会計＝臨界 − 現在の不安 ≤ 事件日 − 今日 + 1（1枚/ターン・事件日で切る。
+            #   式の根拠はクラス属性 B287_DESCEND_FEASIBLE のコメント）。同一犯人に
+            #   複数の事件日があれば、どれか1つで立てば可（any）。
+            if self.B287_DESCEND_FEASIBLE and _b287_days_ok(view):
+                _alt = {cn for cn in _alt
+                        if any(_cn == cn
+                               and ((unrest_threshold_of(cn) or 0)
+                                    - chars.get(cn, {}).get("unrest", 0)
+                                    <= _cd - day + 1)
+                               for _cd, _cn in pump_targets)}
+            # ★B-287(b)：mem 由来席＝ループ間の実績**だけ**で broken になった席
+            #   （今ループ単独の直撃では BREAK_MIN 未満）。(b) ON かつループ間累積が
+            #   ON の時だけ非空になる（どちらか OFF なら空＝完全に不活性）。
+            _mem_extra: frozenset = frozenset()
+            if ((self.B287_SPARE_TRUMP or self.B288_SEAT_COMPLETION_GUARD)
+                    and self.B287_LOOP_MEMORY and _b287_days_ok(view)):
+                _sig_now = _b286_sig_memo(view, _sigs, loop_memory=False)
+                _mem_extra = (frozenset(_sig["broken_seats"])
+                              - frozenset(_sig_now["broken_seats"]))
+            # ★B-288〔「降り」の席側の会計〕（既定 OFF＝この分岐ごと走らない＝bit 不変）。
+            #   クラス属性 B288_SEAT_COMPLETION_GUARD のコメントに設計の全文。
+            #   免除した席は broken_seats からも外す＝その席は**完全に従来（B-287 OFF）
+            #   の挙動**に戻る（降りない・切り札も温存しない）。mem_extra は定義上
+            #   「今ループ単独では broken でない席」＝land 済み B-286 のループ内判定には
+            #   触れない（射程を広げない＝1レーン1機序）。
+            _bs = _sig["broken_seats"]
+            if self.B288_SEAT_COMPLETION_GUARD and _mem_extra:
+                _exempt = frozenset(
+                    s for s in _mem_extra
+                    if self._b288_seat_completes(view, s, days_left))
+                if _exempt:
+                    _mem_extra = _mem_extra - _exempt
+                    _bs = frozenset(_bs) - _exempt
+            # ★B-287 第3陣（既定 OFF）：+2 の行き先の打点会計（クラス属性
+            #   B287_SPARE_VALUE_CHECK のコメント参照）。既存の帳簿だけで判定：
+            #   (i) 未来の遠隔殺人×reachable 犯人／(ii) broken でないゴール板の実在。
+            _trump_sink = True     # check OFF＝常に温存可（第2陣の挙動そのまま）
+            if self.B287_SPARE_TRUMP and self.B287_SPARE_VALUE_CHECK:
+                _bs0 = _sig["broken_seats"]
+                _trump_sink = any(
+                    i.get("day", 0) >= day and i.get("name") == "遠隔殺人"
+                    and i.get("culprit") in reachable_culprits
+                    for i in view.get("incidents", ())) or any(
+                    ("board", b) not in _bs0 for b in goal_boards)
+            # ★B-291（既定 OFF＝右辺が走らず frozenset()＝OFF は bit 不変）：
+            #   A-57 の連打ガードの材料＝「今ループ既に `暗躍+1` を置いた席」。
+            #   判定そのものは `_b286_penalty` の中（配線1箇所）＝ここは材料の受け渡しだけ。
+            _b291_bait = (_b291_bait_counts(view) if self.B291_BAIT_EXEMPT
+                          else {})
+            b286 = {"broken_seats": _bs,
+                    "cooled": _sig["cooled"], "alt_lines": _alt,
+                    "mem_extra_seats": _mem_extra,
+                    "trump_sink": _trump_sink,
+                    "b291_bait_counts": _b291_bait}
+
         out = {"chars": chars, "keyperson": keyperson, "killer": killer,
+               "b286": b286,
                "oomono": oomono, "oomono_territory": oomono_territory,
                "boardx_owner": boardx_owner, "board_x": board_x,
                "boardx_supply_ok": boardx_supply_ok,
@@ -2018,6 +3044,9 @@ class HeuristicMastermind:
                "cultist": cultist, "friends": friends,
                "sk": sk, "tt": tt, "killable": killable,
                "roles": roles,   # ★A-65：不死判定（ROLE_CLAUSE_ABILITY）用の役職表
+               # ★B-285：述語（`_b285_cool_is_inert`）が能力側でもルールXを読めるように
+               #   置くだけの参照値（既定 OFF ではどこからも読まれない＝挙動 bit 不変）。
+               "rule_xs": (view.get("rule_x"), view.get("rule_x2")),
                # ★A-67：役職効果パスの材料（lovers/friend）
                "lover": lover, "mainlover": mainlover, "kill_costs": kill_costs,
                "friend_target": friend_target, "kill_inc_culprits": kill_inc_culprits,
@@ -2047,6 +3076,9 @@ class HeuristicMastermind:
                "kp_blocked": kp_blocked, "locked": locked,
                "push_culprit": push_culprit,   # ★A-63：事件日の押し切り対象（無ければNone）
                "unlocked_coolers": unlocked_coolers,   # ★A-64②：解禁済み冷却役（隔離候補）
+               # ★T7b：A-63 系の冷却容量（解禁済み軽量不安除去の本数）と全除去級解禁の輸出。
+               #   既定 OFF（T7B_ANCHOR_COOL_CAP=False）ではどこからも読まれない＝挙動 bit 不変。
+               "n_cool": _n_cool, "wipe": _wipe,
                "board_guarded": board_guarded, "killer_guarded": killer_guarded,
                "kp_guarded": kp_guarded,
                # 役職バレコスト（belief.reveal_cost）用の材料。クロマク居るときだけ格納し、
@@ -2103,17 +3135,47 @@ class HeuristicMastermind:
         if decision == "set_card":
             # ★A-54：暗躍+2の非正当先への減点を採点の出口1箇所で引く（_score_set は勝ち筋ごとに
             #   早期returnが多く、各分岐へ差し込むと配線漏れを招く＝[[wiring-forgotten-across-paths]]）。
+            # ★B-289（既定 0.0＝左辺が偽で短絡＝options を1周もしない＝bit 不変）。
+            #   「その決定で減点が発火したか」は options 全体の性質＝ここで1回だけ求める
+            #   （`_sc` の中で毎回数え直さない）。
+            _b289_fired = bool(self.B289_ALT_BONUS) and any(
+                self._b286_penalty(_o, a) > 0 for _o in options)
+
+            # ★B-293（既定 OFF＝下の `and` が短絡＝述語も呼ばれない＝bit 不変）。
+            _b293_on = (self.B293_SKIP_IMMOBILE_MOVE
+                        or self.B293_SKIP_BLOCKED_DEST)
+
             def _sc(o):
+                # ★B-293：規則上いっさい盤面を動かさない移動札は「候補から外す」
+                #   （番兵スコア＝どの手にも勝てない。option 列は削らない＝rng 不変）。
+                if _b293_on and self._b293_move_is_void(o, view):
+                    return _B293_VOID
+                # ★B-286 も同じ出口で引く（OFF＝0.0 減算＝IEEE754 で x-0.0==x＝bit 不変）
+                # ★B-289 も同じ出口で足す（OFF＝0.0 加算＝同じく bit 不変）
+                return (self._score_set(o, a, view)
+                        - self._plus2_penalty(o, a, view)
+                        - self._b286_penalty(o, a)
+                        + self._b289_bonus(o, a, view, _b289_fired))
+
+            def _sc_raw(o):
+                # ★B-286 減点**前**の素点＝複線演出（B-215）の頻度述語 P4 の判定用。
+                #   減点で P4（本命評価<110）が裏返ると、降りようとしている線を守る
+                #   ダミーが実弾（犯人への不安）の席を食う（機序検死＝random_BTX#1
+                #   5日級 h1：mm の完勝が L3 で崩れた唯一の差がこのダミー1枚）。
+                #   「降りる線をダミーで守る」は自己矛盾＝P4 は素点で判定する。
+                #   OFF では _sc と同値（減点 0.0）＝bit 不変。
                 return self._score_set(o, a, view) - self._plus2_penalty(o, a, view)
             best = self._pick(options, _sc)
             # ★B-215（既定OFF）：先置きダミー＝**席順の入れ替え**。`_pick` の後に差し替える
             #   ＝option 数も rng の消費列も変わらない（OFF なら1バイトも通らない）。
-            return self._b215_decoy_swap(best, options, a, view, _sc) or best
+            return self._b215_decoy_swap(best, options, a, view, _sc_raw) or best
         if decision == "mastermind_ability":
             return self._pick(options, lambda o: self._score_ability(o, a))
         if decision == "turn_end_ability":
             return self._pick(options, lambda o: self._score_turn_end(o, a))
         if decision == "incident_choice":
+            if self.T12_RUMOR_TARGET and a.get("today_incident") == "流布":
+                return self._pick(options, lambda o: self._score_rumor(o, a, view, options))
             return self._pick(options, lambda o: self._score_incident(o, a))
         if decision == "loop_start_area":
             return self._pick(options, lambda o: self._score_loop_area(o, view))
@@ -2332,6 +3394,128 @@ class HeuristicMastermind:
             return self.p["plus2_hold_waste"]
         return self.p["plus2_waste"]
 
+    def _b288_seat_completes(self, view: dict, seat, days_left: int) -> bool:
+        """★B-288：その席（折られた線）は「今ループ中に完成する側」か（既定 OFF）。
+
+        設計＝クラス属性 `B288_SEAT_COMPLETION_GUARD` のコメント。板席のみを見る
+        （キャラ席は B-286 の検出時点で「カルティストで通った可能性を排除できない」＝
+        保守側に倒してあり、`B286_CHAR_DESCENT` も既定 OFF＝射程を広げない）。
+
+        材料は**卓上の公開カウンタだけ**：
+        - "prev"／"ever" ＝ `loop_board` イベント（`sim/effects.evaluate_loop_end` が
+          毎ループ終了時に公開するボード暗躍。決定時点の `view["history"]` に既載）。
+        - "static" ＝ 発注どおりの静的会計（対照用。★OFF と同値ではない＝B-287 記憶の無効化に相当。クラス属性のコメント参照）。
+        """
+        kind, tgt = seat
+        if kind != "board":
+            return False
+        mode = self.B288_GUARD_MODE
+        if mode == "static":
+            # ★対照＝「臨界2 まで残り」を1枚/ターンで賄えるか（暗躍+2 は1枚で2）。
+            #   実測＝母集団の 100% が真＝何も弾かない（この形の負の結果の証拠）。
+            return (2 - (view.get("board_anyaku", {}) or {}).get(tgt, 0)) <= days_left
+        loop = view.get("loop", 1)
+        ends: dict = {}
+        for e in view.get("history", ()) or ():
+            if e.get("event") == "loop_board":
+                ends[e.get("loop")] = e.get("board_anyaku") or {}
+        if mode == "ever":
+            return any((v or {}).get(tgt, 0) >= 2 for v in ends.values())
+        return (ends.get(loop - 1) or {}).get(tgt, 0) >= 2
+
+    def _b286_penalty(self, o: dict, a: dict) -> float:
+        """★B-286：折られた実績のある線への再置の減点（既定 OFF＝常に 0.0）。
+
+        発火条件（狭い述語・§72-114 の実装方針どおり）：
+        (0) 乗り換え先（a["b286"]["alt_lines"]＝未使用の拮抗線）が**実在する時だけ**。
+            無ければ折られていても最善の線＝続ける（B-281 の教訓＝§72-109）。
+        (1) 今ループ暗躍禁止に直撃された席と同一 (kind, target) への暗躍札の再置。
+        (2) 今ループ冷却された犯人への 不安+1 の積み増し（乗り換え先が**その犯人
+            以外に**ある時だけ＝自分の線しか残っていないなら降りない）。
+        ★ダミー板（複線演出）は broken_seats に最初から入らない（検出側で除外）。
+        ★脚本家能力フェイズの暗躍（クロマク等）は対象外＝行動解決の外＝暗躍禁止で
+          止まらない（KB: rules/10:65）＝「折られる」経路ではないので降りる理由がない。
+        配線＝decide() の `_sc` 出口1箇所（A-54 `_plus2_penalty` と同じ作法＝
+        [[wiring-forgotten-across-paths]] 対策）。
+        """
+        if not self.B286_LINE_SWITCH:
+            return 0.0
+        info = a.get("b286")
+        if not info:
+            return 0.0
+        card, tgt, kind = o["card"], o["target"], o["target_kind"]
+        if card in _ANRYAKU_VALUE and (kind, tgt) in info["broken_seats"] \
+                and (kind == "board" or self.B286_CHAR_DESCENT):
+            # ★B-291（既定 OFF）：折られた席への `暗躍+1` **一枚目**は減点しない
+            #   ＝§1i「バレたルートへの配置は拘束として実手」＋A-57「捨てた筋への拘束」。
+            #   `暗躍+2`（切り札）は従来どおり減点＝§1i「防がれうる場所に切らない」。
+            #   ★連打ガード＝同一ループ内で同じ席へ2枚目以降の `暗躍+1` は免除しない
+            #   （A-51/A-57 の「+1 連打の中途半端」を作らない＝拘束は1枚）。
+            if (self.B291_BAIT_EXEMPT and card == "暗躍+1"
+                    and (info.get("b291_bait_counts") or {}).get((kind, tgt), 0)
+                    < self.B291_BAIT_MAX):
+                return 0.0
+            # ★B-287(b)：mem 由来席（両フラグ OFF なら常に空＝旧経路と同値）。
+            _mem = (kind, tgt) in (info.get("mem_extra_seats") or ())
+            # 全面降り＝乗り換え先が実在する時（(a) ON なら完成会計の立つ先に限る）。
+            #   (b) 単独 ON の mem 由来席は全面降りしない（(a) 併用時は (a) が優先）。
+            _hold = (self.B287_SPARE_TRUMP and _mem
+                     and not self.B287_DESCEND_FEASIBLE)
+            if info["alt_lines"] and not _hold:
+                return self.B286_REPLACE_PENALTY
+            # 降りない時：(b)＝切り札（暗躍+2）だけは守られた正面に出さない。
+            #   ★第3陣（B287_SPARE_VALUE_CHECK・既定 OFF）＝行き先の打点会計
+            #   （trump_sink）が立たなければ温存もしない（＝+2 の再置を許す）。
+            if (self.B287_SPARE_TRUMP and _mem and card == "暗躍+2"
+                    and (not self.B287_SPARE_VALUE_CHECK
+                         or info.get("trump_sink", True))):
+                return self.B286_REPLACE_PENALTY
+            return 0.0
+        if not info["alt_lines"]:
+            return 0.0
+        if (self.B286_COOL_DESCENT
+                and card == "不安+1" and kind == "character"
+                and tgt in info["cooled"] and (info["alt_lines"] - {tgt})):
+            return self.B286_REPLACE_PENALTY
+        return 0.0
+
+    def _b289_bonus(self, o: dict, a: dict, view: dict, fired: bool) -> float:
+        """★B-289：降りた後の配分を乗り換え先へ寄せる加点（既定 0.0＝常に 0.0）。
+
+        発火条件（狭い述語）：
+        (0) `B289_ALT_BONUS != 0` かつ **その決定で `_b286_penalty` が実際に発火した**
+            （`fired` は `decide()` が options を1周して求める）＝降りても温存しても
+            いない局面には1点も足さない＝射程は「降りた後の配分」だけ。
+        (0b) `days_per_loop >= B289_MIN_DAYS(=5)`＝3日級・4日級では発火しない
+            （★ゲートは**値の関数の中**に置く＝配線点が増えても射程が漏れない。
+            `B287_MIN_DAYS` とは独立の定数＝結合を作らない）。
+        (1) 対象が `alt_lines`（未使用の拮抗線＝乗り換え先の犯人）であること。
+        (2) 札が**線を進める種類**であること（既定＝`_PUMP_CARDS`。クラス属性
+            `B289_ALT_SCOPE` のコメントにカード種の接地の全文）。
+        ★**降りるか否かの判定には一切触らない**＝`broken_seats`／`alt_lines` の作り方も
+          `_b286_penalty` も不変（1レーン1機序＝§72-125 の「本発注は降りるか否かに
+          触らない」）。
+        配線＝`decide()` の `_sc` 出口1箇所（`_b286_penalty` と同じ作法＝
+        [[wiring-forgotten-across-paths]] 対策）。`_sc_raw`（複線演出 P4 の素点）には
+        入れない＝B-286 の減点を入れないのと同じ理由（B-215 の判定を動かさない）。
+        """
+        if not self.B289_ALT_BONUS or not fired:
+            return 0.0
+        if (view.get("days_per_loop") or 0) < self.B289_MIN_DAYS:
+            return 0.0
+        info = a.get("b286")
+        if not info:
+            return 0.0
+        if o["target_kind"] != "character" or o["target"] not in info["alt_lines"]:
+            return 0.0
+        scope = self.B289_ALT_SCOPE
+        card = o["card"]
+        if card in _PUMP_CARDS and scope in ("pump", "both"):
+            return self.B289_ALT_BONUS
+        if card in _ANRYAKU_VALUE and scope in ("anyaku", "both"):
+            return self.B289_ALT_BONUS
+        return 0.0
+
     # -- 行動カードのセット --------------------------------------------------
 
     def _score_set(self, o: dict, a: dict, view: dict) -> float:
@@ -2481,7 +3665,16 @@ class HeuristicMastermind:
             if (c and c["alive"]
                     and (tgt == a["today_culprit"] or tgt in a["future_culprits"])
                     and th is not None and c["unrest"] >= max(1, th - 1)):
-                return self.p["set_cool_locked"]  # 臨界間際の犯人を冷やして事件を不発に
+                # ★B-285（既定 OFF＝両分岐とも走らない＝bit 不変）：臨界0の犯人は
+                #   `不安-1` で発生条件(2)を偽にできない＝この冷却は事件を止められない
+                #   空振り（述語＝`_b285_cool_is_inert`。KB 行番号はそちらのコメント）。
+                _b285_inert = self._b285_cool_is_inert(
+                    th, c["unrest"], tgt, a.get("roles"),
+                    (view.get("rule_x"), view.get("rule_x2")))
+                if _b285_inert and self.B285_LIVENESS_BREAK:
+                    return 1e6            # liveness 検査専用
+                if not (_b285_inert and self.B285_SKIP_DEAD_COOL):
+                    return self.p["set_cool_locked"]  # 臨界間際の犯人を冷やして事件を不発に
         # ★B-122（2026-08-01）：自陣資産犯人（self_harm＝発生が打点負と確定済みの自殺）の燃料を
         #   **能動的に消す**＝コンボ中止の実手。教材棋譜 FS5日s4 L3D4＝配達が受けられ確定した後も
         #   冷却の採点分岐が存在せず（0.0）、お嬢様(SK・u=1・臨界1)の自殺が発火して資産全損。
@@ -2575,10 +3768,13 @@ class HeuristicMastermind:
                     return self.p["set_unrest_butterfly"]
                 # ★発生の打点会計：臨界に届かない事件の犯人へは不安+1を注がない（無駄撃ち）。
                 #   届く犯人（reachable）だけ本命価値、届かないなら霧まきに劣後させる。
-                if tgt == a["today_culprit"] and th is not None and c["unrest"] < th:
+                # ★T8：以下の「不安」は A.I. に限り合算（`_eff_unrest`・既定 ON＝A.I. 以外／明示 OFF は素の unrest）
+                #   ＝合算で既に臨界の A.I. へ今日/未来の本命価値で注ぎ続けない（下の sat ゲートへ落ちる）。
+                _cu = self._eff_unrest(c, tgt)
+                if tgt == a["today_culprit"] and th is not None and _cu < th:
                     return (self.p["set_unrest_today"] if tgt in a["reachable_culprits"]
                             else self.p["set_unrest_today_far"])
-                if tgt in a["future_culprits"] and th is not None and c["unrest"] < th:
+                if tgt in a["future_culprits"] and th is not None and _cu < th:
                     return (self.p["set_unrest_future"] if tgt in a["reachable_culprits"]
                             else self.p["set_unrest_future_far"])  # 未来の犯人の仕込み
                 # ★迷ったら不安+1は臨界の低いキャラへ（ユーザー知見 2026-07-06）：
@@ -2611,18 +3807,18 @@ class HeuristicMastermind:
                     return self.p["set_unrest_sat"]
                 # ★過剰な不安の抑制（ユーザー指摘 2026-07-06）：既に不安臨界以上のキャラは
                 #   もう eligible（霧要員）＝これ以上の不安は無駄。臨界未満のキャラだけ霧に足す。
-                if th is not None and c["unrest"] >= th:
+                if th is not None and _cu >= th:          # ★T8：A.I. は合算
                     return self.p["set_unrest_sat"]
                 # ★A-5(a)：残り解決回数で臨界に届かないキャラへのノイズは見透かされる（霧にならない）。
                 #   最大限pumpしても臨界未満＝「この者は今ループ犯人になれない」と読まれ消去される
                 #   （例：最終日に臨界4のご神木へ不安+1＝無意味）。「届く犯人だけ注ぐ」の霧版。
                 #   ※reach分岐（unrest+1≥th）とは排他（届く者はこの手前で扱う）。低臨界も残日数が
                 #   足りなければ同様に見透かされる（最終日ガード）。
-                if th is not None and c["unrest"] + a["mm_rate"] * a["days_left"] < th:
+                if th is not None and _cu + a["mm_rate"] * a["days_left"] < th:   # ★T8
                     return self.p["set_unrest_sat"]
                 noise = self.p["set_noise_base"]
                 if th is not None:
-                    if c["unrest"] + 1 >= th:
+                    if _cu + 1 >= th:                     # ★T8：A.I. は合算
                         # ★霧の日付設計（ユーザー知見 2026-07-09）：臨界到達の霧は
                         #   「発火する日」にだけ有効（eligibleに紛れる）。発火しない予定日に
                         #   臨界の者を立てると「不発＝臨界だった者は犯人でない」の消去法を
@@ -2636,7 +3832,12 @@ class HeuristicMastermind:
                 # ★可読性コスト（テスター知見 2026-07-09）：移動不可キャラ（入院患者等＝
                 #   禁止3エリア）への伏せ札は「移動ではない＝ほぼ不安」と読まれ、不安-1で
                 #   即対処される。ブラフ価値が低い先には撒かない（照準は動けるキャラへ分散）。
-                if len(forbidden_of(tgt)) >= 3:
+                #   ★W3（2026-09-04）：禁止エリアは B-293 と同じ取得元
+                #   `sim.state.current_forbidden_from_view`（公開履歴の `forbidden_lifted`
+                #   から再構成）で取る＝医者の友好能力3（入院患者の禁止解除）／女の子の友好能力1
+                #   で**このループ中だけ解除**されている先は動ける＝伏せ札は移動でもあり得る＝
+                #   可読性コストを課さない。判定基準（禁止3エリア以上）は不変。
+                if len(current_forbidden_from_view(view, tgt)) >= 3:
                     noise = max(1.0, noise - self.p["set_noise_immobile"])
                 return noise
         # (4-bx) ★A-24'（2026-07-16・FableA承認）：board_x の担い手（クロマク/ウィッチ）を board_x へ
@@ -2653,7 +3854,7 @@ class HeuristicMastermind:
                 and tgt == a["boardx_owner"] and a["boardx_supply_ok"]):
             mv = chars.get(tgt)
             if mv and mv["alive"] and mv["area"] and mv["area"] != a["board_x"]:
-                if a["board_x"] in forbidden_of(tgt):
+                if a["board_x"] in current_forbidden_from_view(view, tgt):
                     return 0                    # 到達不能＝無駄カード
                 if _single_move_card(mv["area"], a["board_x"]) == card:
                     return self.p["set_move_boardx_return"]
@@ -2680,7 +3881,7 @@ class HeuristicMastermind:
                         return self.p["set_move_stray"]
                     kp, mv = chars.get(a["keyperson"]), chars.get(mover)
                     if kp and mv and kp["area"] and mv["area"] and kp["area"] != mv["area"]:
-                        if kp["area"] in forbidden_of(mover):
+                        if kp["area"] in current_forbidden_from_view(view, mover):
                             return 0  # 到達不能（例: サラリーマンは学校禁止）
                         if _single_move_card(mv["area"], kp["area"]) == card:
                             # ★A-52：KP暗躍が既に2以上＝殺害条件のカウンター側は充足済み＝
@@ -2702,7 +3903,7 @@ class HeuristicMastermind:
             tc3 = chars.get(tgt)
             if (kpc and tc3 and tc3["alive"] and tc3["area"] and kpc["area"]
                     and tc3["area"] != kpc["area"]
-                    and kpc["area"] not in forbidden_of(tgt)
+                    and kpc["area"] not in current_forbidden_from_view(view, tgt)
                     and _single_move_card(tc3["area"], kpc["area"]) == card):
                 return self.p["set_move_witness"]
         # (4a-2) ★A-41'（再訪版・2026-07-26 棚の再発掘）：クロマク供給の能動カバー移動。
@@ -2732,7 +3933,7 @@ class HeuristicMastermind:
                 if (thin and tgt not in own_side and tgt != a["keyperson"]
                         and tc4 and tc4["alive"] and tc4.get("area")
                         and tc4["area"] != cover_area
-                        and cover_area not in forbidden_of(tgt)
+                        and cover_area not in current_forbidden_from_view(view, tgt)
                         and _single_move_card(tc4["area"], cover_area) == card):
                     return self.p["set_move_cover"]
         # (4a0) ★移動封鎖（ユーザー知見 2026-07-06）：今ターン死亡ボード（病院の事件が発生）へ、
@@ -2746,7 +3947,7 @@ class HeuristicMastermind:
             if tc and tc["alive"] and tc["area"] and tc["area"] != db:
                 block = _perp_block_card(tc["area"], db)
                 dest = _move_dest(tc["area"], card) if block == card else None
-                if block == card and dest and dest not in forbidden_of(tgt):
+                if block == card and dest and dest not in current_forbidden_from_view(view, tgt):
                     return self.p["set_move_block_death"]  # 直交移動で死亡ボードへ入れない＝生存確保
         # (4a1) ★シリアルキラーの位置作り（ユーザー知見 2026-07-06：SKをもっと使う）：
         #       SK＋標的（キーパーソン/フレンド）を2人きりにすればターン終了に【強制】で殺せる。
@@ -2769,7 +3970,7 @@ class HeuristicMastermind:
                         _tc = chars.get(_t)
                         if not (_tc and _tc["alive"] and _tc["area"]):
                             continue
-                        if (_tc["area"] not in forbidden_of(_sk)
+                        if (_tc["area"] not in current_forbidden_from_view(view, _sk)
                                 and _single_move_card(_skc["area"], _tc["area"]) == card
                                 and not _alive_in(_tc["area"], exclude=(_t,))):
                             return self.p["set_move_sk_approach"]
@@ -2778,7 +3979,7 @@ class HeuristicMastermind:
                     _tc = chars.get(tgt)
                     if (_tc and _tc["alive"] and _tc["area"]
                             and _move_dest(_tc["area"], card) == _skc["area"]
-                            and _skc["area"] not in forbidden_of(tgt)
+                            and _skc["area"] not in current_forbidden_from_view(view, tgt)
                             and not _alive_in(_skc["area"], exclude=(_sk,))):
                         return self.p["set_move_sk_deliver"]
                 # (ii) SK＋標的が居る3人部屋の"3人目"を別エリアへ追い出す＝残りが2人きり
@@ -2789,7 +3990,7 @@ class HeuristicMastermind:
                         _tg_here = [t for t in a["killable"] if t in _here]
                         _dest = _move_dest(_tc["area"], card)
                         if (len(_here) == 3 and len(_tg_here) == 1 and _dest
-                                and _dest != _skc["area"] and _dest not in forbidden_of(tgt)):
+                                and _dest != _skc["area"] and _dest not in current_forbidden_from_view(view, tgt)):
                             return self.p["set_move_sk_evict"]
         # (4a1b) ★A-64③：発生見込みの殺人事件当日に、犯人と急所（KP/フレンド）を同席させる
         #        （目視検死『蝶レース再審』§7＝実対局は無人の部屋で空撃ちだった）。
@@ -2809,14 +4010,14 @@ class HeuristicMastermind:
                     # (a) 急所を犯人のエリアへ
                     if (tgt in _kill_alive and tgt != a["today_culprit"]
                             and _move_dest(chars[tgt]["area"], card) == _cu["area"]
-                            and _cu["area"] not in forbidden_of(tgt)):
+                            and _cu["area"] not in current_forbidden_from_view(view, tgt)):
                         return self.p["set_move_murder_meet"]
                     # (b) 犯人を急所のエリアへ（臨界済み＝押し込み不要の時だけ）
                     _cth = unrest_threshold_of(a["today_culprit"])
                     if (tgt == a["today_culprit"] and _cth is not None
                             and _cu["unrest"] >= _cth):
                         _dest = _move_dest(_cu["area"], card)
-                        if (_dest and _dest not in forbidden_of(tgt)
+                        if (_dest and _dest not in current_forbidden_from_view(view, tgt)
                                 and any(chars[t]["area"] == _dest for t in _kill_alive)):
                             return self.p["set_move_murder_meet"]
         # (4a1c) ★A-64②：解禁済み冷却役の隔離＝冷却能力の「同エリア前提」を移動1枚で解体
@@ -2842,7 +4043,7 @@ class HeuristicMastermind:
                     if (inc["culprit"] in a["reachable_culprits"]
                             or _cu["unrest"] >= _cth):
                         _dest = _move_dest(_tc["area"], card)
-                        if _dest and _dest not in forbidden_of(tgt):
+                        if _dest and _dest not in current_forbidden_from_view(view, tgt):
                             return self.p["set_move_cool_exile"]
         # (4a2) ★ミスリーダーを（届く）犯人のエリアへ寄せる移動：同居させれば脚本家能力
         #       フェイズの不安+1で犯人の不安を日数×2で稼げる（ユーザー知見 2026-07-06）。
@@ -2850,11 +4051,19 @@ class HeuristicMastermind:
         if card in MOVE_CARDS and kind == "character" and tgt == a["misleader"] \
                 and not a["locked"] and a["pump_targets"]:
             ml = chars.get(a["misleader"])
+            # ★T7（既定 ON・§72-151）：ML の現在地に「今日 ML の +1 で臨界に届く犯人」（錨）が居るなら、
+            #   どの移動札も錨から離れる＝当日の供給を自分で切る手＝(4a2) の点を出さない。
+            if self._t7_ml_anchor(a, view) is not None:
+                # ★T7c（既定 ON・§72-157）：寄せ先がメインラバーズ（不安3で主人公殺害＝`rules/50:160`）で
+                #   到達算術が通るなら、錨より主人公殺害の線を取る＝(4a2) の点を出す。
+                if card == self._t7c_lovers_dest_card(a, view):
+                    return self.p["set_move_misleader"]
+                return self.p["set_move_stray"]
             if ml and ml["area"]:
                 for _d, culp in a["pump_targets"]:
                     cc = chars.get(culp)
                     if (cc and cc["area"] and cc["area"] != ml["area"]
-                            and cc["area"] not in forbidden_of(a["misleader"])
+                            and cc["area"] not in current_forbidden_from_view(view, a["misleader"])
                             and _single_move_card(ml["area"], cc["area"]) == card):
                         return self.p["set_move_misleader"]
             return self.p["set_move_stray"]
@@ -2865,7 +4074,7 @@ class HeuristicMastermind:
             cu = chars.get(a["cultist"])
             if cu and cu["area"]:
                 for gb in a["goal_boards"]:
-                    if cu["area"] != gb and gb not in forbidden_of(a["cultist"]) \
+                    if cu["area"] != gb and gb not in current_forbidden_from_view(view, a["cultist"]) \
                             and _single_move_card(cu["area"], gb) == card:
                         # ★相手モデル：ボードに暗躍禁止を毎回当ててくる相手には、
                         #   カルティスト同席＝暗躍禁止の無効化が最良の回答＝優先を上げる
@@ -3294,7 +4503,13 @@ class HeuristicMastermind:
             if (a["locked"] and c
                     and (tgt == a["today_culprit"] or tgt in a["future_culprits"])
                     and th is not None and c["unrest"] >= max(1, th - 1)):
-                return self.p["ab_cool_locked"]
+                # ★B-285（既定 OFF）：上と同じ述語＝臨界0の対象への冷却は空振り。
+                _b285_inert = self._b285_cool_is_inert(
+                    th, c["unrest"], tgt, a.get("roles"), a.get("rule_xs"))
+                if _b285_inert and self.B285_LIVENESS_BREAK:
+                    return 1e6            # liveness 検査専用
+                if not (_b285_inert and self.B285_SKIP_DEAD_COOL):
+                    return self.p["ab_cool_locked"]
             return self.p["ab_weak"]
         if o["kind"] == "unrest":
             # ミスリーダー：犯人の不安を臨界へ運ぶときだけ使う。
@@ -3449,6 +4664,60 @@ class HeuristicMastermind:
         if tgt in a["threats"]:
             return self.p["inc_threat"]  # 巫女・神格・刑事の対抗手段を先に消す
         return self.p["inc_other"]
+
+    def _score_rumor(self, o: dict, a: dict, view: dict, options: list[dict]) -> float:
+        """★T12：事件『流布』の対象採点（`T12_RUMOR_TARGET` ON の時だけ呼ばれる）。
+
+        流布（`rules/40:153`）＝「任意のキャラ1人から友好2つ取り除き、別の任意のキャラ1人に友好2つ置く」
+        ＝sim は同じ `incident_choice` を2回出す（1回目＝-2 の相手・全生存者／2回目＝+2 の相手・
+        1回目を除く）。段階は **options の数** で見分ける（1回目＝盤上の生存者数と同数）。
+
+        1枚目（-2）の順位＝
+          TT が最終日に友好≤2 へ落ちる（友好3〜4）＞ TT の友好を削る（非最終日）＞ 脅威能力持ちの
+          敷居を割る（友好≥1）＞ TT 友好≥5 ＞ その他の友好≥1 ＞ 友好0（空撃ち）。
+          KB 接地＝タイムトラベラー【任意】敗北は「最終日・友好2以下」（`rules/50:128`・
+          `engine.turn_end_rules.TT_DEFEAT_GOODWILL_MAX`）。
+        2枚目（+2）の順位＝
+          友好能力なし ＞ 友好無視/絶対友好無視の役職（拒否できる）＞ +2 でも敷居に届かない ＞ その他
+          ＞ 脅威能力持ち ＞ TT（敗北条件から遠ざける＝最悪）。
+        """
+        tgt = o.get("target")
+        chars = a["chars"]
+        roles = a.get("roles", {})
+        c = chars.get(tgt) or {}
+        gw = int(c.get("goodwill", 0) or 0)
+        n_alive = sum(1 for x in chars.values() if x.get("alive") and x.get("area"))
+        first = len(options) >= n_alive
+        is_tt = roles.get(tgt) == "タイムトラベラー"
+        final_day = int(view.get("day", 0) or 0) >= int(view.get("days_per_loop", 0) or 0)
+        p = self.T12_RUMOR_WEIGHTS
+        if first:
+            if is_tt:
+                if final_day and gw >= 1 and gw - 2 <= TT_DEFEAT_GOODWILL_MAX:
+                    return p["inc_rumor_tt_decisive"]
+                if gw >= 5:
+                    return p["inc_rumor_tt_high"]
+                if gw >= 1:
+                    return p["inc_rumor_tt_nonfinal"]
+                return p["inc_rumor_zero"]
+            if gw <= 0:
+                return p["inc_rumor_zero"]
+            if tgt in a["threats"]:
+                return p["inc_rumor_threat_funded"]
+            return p["inc_rumor_funded_other"]
+        # 2枚目（+2）
+        if is_tt:
+            return p["inc_rumor_give_tt"]
+        abs_ = goodwill_abilities_of(tgt)
+        if not abs_:
+            return p["inc_rumor_give_harmless"]
+        if ROLE_CLAUSE_ABILITY.get(roles.get(tgt, "")) in ("友好無視", "絶対友好無視"):
+            return p["inc_rumor_give_refusable"]
+        if tgt in a["threats"]:
+            return p["inc_rumor_give_threat"]
+        if gw + 2 < min(ab["hearts"] for ab in abs_):
+            return p["inc_rumor_give_unreachable"]
+        return p["inc_rumor_give_other"]
 
     def _score_loop_area(self, o: dict, view: dict) -> float:
         # 手先の初期エリア。復讐者の灯火で手先＝クロマクならボードXになるので、

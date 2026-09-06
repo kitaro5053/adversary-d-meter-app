@@ -37,6 +37,23 @@ class IncidentResult:
         return self.occurs is None
 
 
+def effective_unrest_for_incident(c) -> int:
+    """発生判定で「不安」として数える値（★A.I. 合算の**単一ソース**・W4 2026-09-04）。
+
+    - 通常キャラ＝素の `unrest`。
+    - **A.I.**＝特性②（KB `rules/30_characters.md:50`・現物カード確認 2026-07-08）＝自身が犯人の
+      事件の発生判定では置かれている**全てのカウンター**（友好・暗躍・護衛も）を不安として扱う
+      ＝ `unrest + goodwill + anyaku + guard`。
+    - `c` は `name/unrest/goodwill/anyaku/guard` 属性を持つ任意のオブジェクト（engine の
+      `Character` でも sim の `CharState` でも可）。`guard` は無ければ 0 扱い。
+    - `resolve_incident`（製品トラック）と `sim/effects.py` の公開 `eligible`（AIトラック）が
+      **同じ関数**を使う＝合算の算術を二重定義しない（`docs/バックログ_構想メモ_FableA.md` §72-135）。
+    """
+    if getattr(c, "name", None) == "A.I.":
+        return (c.unrest + c.goodwill + c.anyaku + getattr(c, "guard", 0))
+    return c.unrest
+
+
 def resolve_incident(board: Board, incident: dict, set_name: str = "BTX") -> IncidentResult:
     """事件の発生判定。
 
@@ -50,9 +67,10 @@ def resolve_incident(board: Board, incident: dict, set_name: str = "BTX") -> Inc
 
     # ★A.I.の特性②（現物カード確認 2026-07-08）：自身が犯人の事件の発生判定では、
     #   置かれている全てのカウンター（友好・暗躍・護衛も）を不安カウンターとしても扱う。
+    #   算術は effective_unrest_for_incident が単一ソース（sim 側の公開 eligible も同じ関数）。
     ai_total = None
     if c is not None and culprit == "A.I.":
-        ai_total = (c.unrest + c.goodwill + c.anyaku + getattr(c, "guard", 0))
+        ai_total = effective_unrest_for_incident(c)
 
     # 犯人が盤面未定義（通常 translate で弾くが、防御的に扱う）。
     if c is None:

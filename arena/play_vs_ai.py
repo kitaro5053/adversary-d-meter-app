@@ -480,6 +480,9 @@ _PHASE_JP = {
     "protagonist_set": "主人公行動フェイズ", "action_resolution": "行動解決フェイズ",
     "mastermind_ability": "脚本家能力フェイズ", "goodwill_ability": "主人公能力フェイズ",
     "goodwill_refuse": "主人公能力フェイズ（友好能力の拒否判断）",
+    # ★B-278：医者の [主] の宣言（除去/付与）＝拒否より前（KB 20:14-18/:228）。
+    #   ★T13：教師『学生の不安操作』（20:112-116）も同じ決定名で宣言する。
+    "doctor_unrest_mode": "主人公能力フェイズ（不安を除去するか付与するかの宣言）",
     "incident": "事件フェイズ", "loop_start": "ループ開始",
     "loop_end": "ループ終了フェイズ", "turn_end": "ターン終了フェイズ",
     "final_battle": "最後の戦い", "loop_start_area": "ループ開始（登場位置の指定）",
@@ -693,134 +696,21 @@ def incident_effects_md(script) -> str:
         eff = INCIDENT_EFFECTS.get(i.name, "（要確認）")
         lines.append(f"- **Day{i.day}『{i.name}』**（犯人：{_threshold_tag(i.culprit)}）：{eff}")
     return "\n".join(lines)
-
-
-def _defense_plan_md(state, script) -> str:
-    """現局面で主人公AIが直面する脅威と最安の防御計画を markdown 化（advisory）。
-
-    protagonist_view（p1）＋3席の手札在庫＋belief から脅威を列挙し、
-    『負け筋→折る手／防御不能はレース対象』を表にする。engine の状態が無い
-    （ループ準備前など）ときは空文字を返す。
-    """
-    try:
-        from agents.belief import Belief
-        from agents.defense_plan import (
-            ANRYAKU_KINSHI_TURN_CAP, plan_for_belief, render_plan_md)
-        from sim.legal import set_card_options
-        from sim.views import protagonist_view
-        view = protagonist_view(state, "p1")
-        opts: list = []
-        for s in ("p1", "p2", "p3"):
-            opts += set_card_options(state, s)
-        bel = Belief(script.cast, _public_incidents(script), script.set_name)
-        bel.observe(state.history)
-        # ★#B11：負け筋を実在度1%以下の低いものまで広く表示（表示専用＝AIの意思決定既定は不変）。
-        #   card_turn_caps＝暗躍禁止は1枚/ターン＝二正面（暗躍禁止を要する脅威が2本）を
-        #   「枚数不足で未防御」として正しく表示する（表示専用・AIの配線は既定 None のまま）。
-        # ★全件表示（ユーザー要望 2026-07-13）：min_prob=0＝実在度が極小の負け筋まで全部出す。
-        threats, plan = plan_for_belief(view, bel, options=opts, min_prob=0.0,
-                                        card_turn_caps=ANRYAKU_KINSHI_TURN_CAP)
-        md = render_plan_md(threats, plan, detailed=True, max_rows=None)
-        if bel.n_worlds() == 0:   # 可能世界0＝役職推定が信頼できない（イレギュラー枠外配役等）
-            md = ("> ⚠️ **belief推理不能（可能世界0）**：役職ベースの脅威（KP/キラー等）は"
-                  "信頼できません。以下は盤面カウンター由来の脅威のみ有効です。\n\n" + md)
-        return md
-    except Exception as e:   # 握り潰さず理由を出す（#6・AIC要望）
-        import traceback
-        return ("##### 🛡 防御プランナー\n"
-                f"_計算に失敗：{type(e).__name__}: {e}_\n\n"
-                f"```\n{traceback.format_exc()[-600:]}\n```")
-
-
-def _defense_plan_compute(state, script, *, min_prob: float = 0.0,
-                          include_breached: bool = False, display_all: bool = False):
-    """防御プランナの脅威列挙＋防御計画を計算し (threats, plan, unreliable) を返す（A-1共通計算部）。
-
-    ロジックは agents/defense_plan（AIB所有）。include_breached＝突破済み（既に敗北域）の脅威も
-    表示用に返す＝AIBの plan_for_belief(include_breached=…) API。**未着版では TypeError を捕えて
-    従来シグネチャで呼ぶ**＝UI骨格を先行実装し、API landing 後に自動で有効化される。
-    """
-    from agents.belief import Belief
-    from agents.defense_plan import ANRYAKU_KINSHI_TURN_CAP, plan_for_belief
-    from sim.legal import set_card_options
-    from sim.views import protagonist_view
-    view = protagonist_view(state, "p1")
-    opts: list = []
-    for s in ("p1", "p2", "p3"):
-        opts += set_card_options(state, s)
-    bel = Belief(script.cast, _public_incidents(script), script.set_name)
-    bel.observe(state.history)
-    kw = dict(options=opts, min_prob=min_prob,
-              card_turn_caps=ANRYAKU_KINSHI_TURN_CAP)
-    try:
-        # ★A-9：display_all＝生成時のノイズ抑制ガード（rule_p<0.05 等の continue 群）を実在度極小化に
-        #   置換＝min_prob(最終フィルタ)の手前で脅威生成自体が止まる問題を解く（AIB API・0c815cc）。
-        threats, plan = plan_for_belief(view, bel, include_breached=include_breached,
-                                        display_all=display_all, **kw)
-    except TypeError:   # include_breached/display_all API 未着＝従来どおり（突破済み/極小は出ない）
-        threats, plan = plan_for_belief(view, bel, **kw)
-    return threats, plan, (bel.n_worlds() == 0)
-
-
-def defense_plan_rows(threats, plan) -> list[dict]:
-    """★A-1(b)：防御プランナの脅威を dataframe 行（dict）に整える（表示ロジック＝AIA所有）。
-    Threat/Plan（agents/defense_plan＝AIB）から表示値を組む。Streamlit非依存＝テスト可能。
-    Threat.breached（AIB API）が True なら💀突破済み。無い版では通常状態。"""
-    from agents.defense_plan import _break_basis, _pick_for
-    rows: list[dict] = []
-    for t in threats:
-        chosen = _pick_for(plan, t)
-        if getattr(t, "breached", False):        # AIB API：既に敗北域に達した負け筋
-            status = "💀突破済み"
-        elif id(t) in plan.covered:
-            status = "✅覆えた"
-        elif not t.defendable:
-            status = "⛔防御不能（レース）"
-        else:
-            status = "⚠枚数不足で未防御"
-        rows.append({
-            "負け筋": t.label,
-            "実在度%": round(t.prob * 100, 1),
-            "タイミング": t.timing,
-            "状態": status,
-            "折り手": (chosen.card if chosen else "—"),
-            "対象": (chosen.target if chosen else "—"),
-            "根拠": (_break_basis(chosen.card) if chosen else "—"),
-            "堅牢": ("堅" if (chosen and chosen.robust)
-                     else ("追撃可" if chosen else "—")),
-            "コスト": (round(chosen.cost, 1) if chosen else None),
-        })
-    return rows
-
-
-def _group_rows_by_break(rows: list[dict]) -> list[dict]:
-    """★A-1(c)：同じ折り手（折り手×対象）で覆える負け筋を1行に畳む。"""
-    groups: dict = {}
-    order: list = []
-    for r in rows:
-        key = (r["折り手"], r["対象"])
-        if key not in groups:
-            g = dict(r)
-            g["負け筋"] = [r["負け筋"]]
-            groups[key] = g
-            order.append(key)
-        else:
-            groups[key]["負け筋"].append(r["負け筋"])
-            groups[key]["実在度%"] = max(groups[key]["実在度%"], r["実在度%"])
-    out: list[dict] = []
-    for key in order:
-        g = groups[key]
-        names = g["負け筋"]
-        g["負け筋"] = (f"（{len(names)}件）" + "／".join(names)) if len(names) > 1 else names[0]
-        out.append(g)
-    return out
-
-
 def render_defense_planner(state, script, *, reviewing: bool = False) -> None:
-    """★A-1：防御プランナのデバッグ表示（st.dataframe＝ソート/フィルタ可能＋チェックボックス）。
-    脚本家プレイ用。(d)時点ヘッダ・(c)足切り/突破済み/畳みの表示制御。表示層＝AIA所有。
-    reviewing＝過去フェイズをレビュー中（cursorが後ろ）＝上の盤面は過去だが、この脅威表は state
-    （現決定局面）から計算するライブ助言＝時点差をキャプションで明示する（A-15・2026-07-16）。"""
+    """脚本家プレイ用の負け筋パネル。表示層＝AIA所有。
+
+    ★2026-08-17（ユーザー裁定）＝**脅威表（旧 A-1 の st.dataframe）を撤去した**。
+      理由＝(1) 内容が下の「全負け筋の判定」ツリーと重複しており**ツリーの方が良くできている**
+      (2) ★この表は `_defense_plan_compute` で **belief を作り直し・`min_prob=0.0` と
+      `card_turn_caps=ANRYAKU_KINSHI_TURN_CAP` を渡した表示専用の再計算**であって、
+      **主人公AI が実際に使う入力ではない**（AI 側＝`heuristic_protagonist._plan_recs` は
+      `plan_for_belief(view, self._belief, options, initial_areas=…)` を既定パラメータで呼ぶ）
+      ＝「AI が何を見ているか」の窓として**厳密でなく、むしろ誤解を招く**。
+      ∴ 撤去は**AI の挙動に一切影響しない**（表示専用の再計算を1つ消しただけ）。
+      ★残すもの＝「📊 全負け筋の判定」ツリーと「🎭 見せ球（decoy）選定の内訳」。
+    reviewing＝過去フェイズをレビュー中（cursor が後ろ）＝下のツリーは state（現決定局面）から
+    計算するライブ助言＝時点差をキャプションで明示する（A-15・2026-07-16）。
+    """
     import streamlit as st
     # ★A-10（2026-07-14・ユーザー裁定(ii)）：セット途中でも暫定計算を出し続けるが、ラベルを
     #   正確に＝カード配置ごとの再描画で「セット後」と貼っていたのを、実際の置いた枚数
@@ -830,50 +720,21 @@ def render_defense_planner(state, script, *, reviewing: bool = False) -> None:
     _stage = (f"セット途中・{_mm_placed}/3枚 置いた時点の暫定計算"
               if getattr(state, "phase", "") == "mastermind_set"
               else "セット完了後の盤面")
-    st.markdown(f"##### 🛡 防御プランナー（L{state.loop_no}・D{state.day}・{_stage}）")
+    st.markdown(f"##### 🛡 負け筋パネル（L{state.loop_no}・D{state.day}・{_stage}）")
     if reviewing:
-        st.caption("🔎 この脅威表は**現在の決定局面**のもの（上の盤面はレビュー中の過去フェイズ＝"
+        st.caption("🔎 この判定は**現在の決定局面**のもの（上の盤面はレビュー中の過去フェイズ＝"
                    "時点が異なります）。フェイズを最後まで進めると盤面と一致します。")
-    st.caption("主人公AIが直面する負け筋→最安の折り手。盤面＝脚本家が今ターン伏せた札の位置を"
-               "含む（あなたの見ている『日の頭』より先の情報）。列見出しでソート・右上の🔍でフィルタ可。")
-    c1, c2, c3 = st.columns(3)
-    show_all = c1.checkbox("実在度0%まで表示", value=True, key="mmv_dp_all",
-                           help="ONで実在度が極小の負け筋まで全て表示（生成時の抑制ガードも解除）。"
-                                "OFFで実在度1%未満を隠す。")
-    show_breached = c2.checkbox("💀突破済みも表示", value=True, key="mmv_dp_breached",
-                                help="既に敗北域に達した負け筋も残す（AIBのAPI対応後に有効化）。")
-    group_breaks = c3.checkbox("同じ折り手でまとめる", value=False, key="mmv_dp_group",
-                               help="1枚で複数の負け筋を折れる手を1行に畳む。")
-    try:
-        threats, plan, unreliable = _defense_plan_compute(
-            state, script, min_prob=(0.0 if show_all else 0.01),
-            include_breached=show_breached, display_all=show_all)
-    except Exception as e:   # 握り潰さず理由を出す（#6・AIC要望）
-        st.error(f"防御プランナー計算に失敗：{type(e).__name__}: {e}")
-        return
-    if unreliable:
-        st.warning("⚠️ belief推理不能（可能世界0）：役職ベースの脅威（KP/キラー等）は"
-                   "信頼できません。盤面カウンター由来の脅威のみ有効です。")
-    rows = defense_plan_rows(threats, plan)
-    if group_breaks:
-        rows = _group_rows_by_break(rows)
-    if not rows:
-        st.caption("いま火の点きうる致命的な負け筋は検出なし。")
-        return
-    try:
-        import pandas as pd
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    except Exception:
-        st.table(rows)   # pandas不在時のフォールバック
-    st.caption(f"脅威 {len(rows)} 件／防御 採用 {len(plan.picks)} 枚・"
-               f"総コスト {plan.total_cost:.1f}（席3枚・暗躍禁止1枚/ターン）。"
-               "凡例：✅覆えた（＝**現在列挙済みの脅威を全て手当てできた**＝この表の負け筋は折れている。"
-               "検出器がまだ拾えていない脅威は含みません＝安全確定の意味ではない）／⚠枚数不足（二正面）／"
-               "⛔レース（暗躍禁止で止まらない供給）／💀突破済み。")
+    _render_defense_planner_trees(state, script)
 
-    # ★DP-1 Stage 3（全数表示）：上の表は「発火した脅威」だけ＝拾えていない負け筋は見えない。
-    #   evaluate_tree で**全負け筋ノード**を status 付き（グレー含む）で出し、フッターで自己開示する
-    #   ＝「この対局で今どの負け筋が生きて／折れて／消えて／未接続か」を穴ごと可視化する。
+
+def _render_defense_planner_trees(state, script) -> None:
+    """全負け筋ツリーと見せ球の内訳（脅威表を撤去した後の本体）。"""
+    import streamlit as st
+
+    # ★DP-1 Stage 3（全数表示）：全負け筋ノードを status 付き（グレー含む）で出し、
+    #   フッターで自己開示する＝「この対局で今どの負け筋が生きて／折れて／消えて／未接続か」を
+    #   穴ごと可視化する。★2026-08-17：上にあった脅威表（dataframe）はユーザー裁定で撤去
+    #   （内容がこのツリーと重複＋AI の実入力ではない表示専用の再計算だった）。
     # ★ホットフィックス（2026-07-19・FableA）：外枠は expander でなく toggle にする。
     #   render_losstree_statuses はノードごとに st.expander を開く＝expander の中で呼ぶと
     #   **入れ子expander禁止**で StreamlitAPIException（本番の脚本家プレイで実発生・

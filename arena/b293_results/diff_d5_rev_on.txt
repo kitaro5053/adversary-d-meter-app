@@ -1,0 +1,9 @@
+# B-293 diff（5日級 perm=rev） off → on
+  void_immobile: 15 → 0  (Δ-15)
+  void_dest: 15 → 0  (Δ-15)
+  blocked_mm: 20 → 5  (Δ-15)
+  blocked_any: 20 → 5  (Δ-15)
+  mm_total: 202 → 209  (Δ+7)
+  防衛数(参考): 73 → 72 ／ 平均 3.525 → 3.612
+  番人 非decoy: 67 → 67 ／ lint {'D1': 25, 'D2': 60, 'D3': 0, 'D4': 0, 'D5': 0, 'D6': 0} → {'D1': 27, 'D2': 65, 'D3': 0, 'D4': 0, 'D5': 0, 'D6': 0}
+  flip random_BTX#1: 2(defense) → 9(fb_loss)  Δ第2層 +7

@@ -14,6 +14,7 @@ history には結果のみ（理由なし＝00:127）、secret_log には理由�
 from __future__ import annotations
 
 from engine import Board, Character, Placement, resolve_incident
+from engine.incident import effective_unrest_for_incident  # W4: A.I. 合算の単一ソース
 from engine.turn_end_rules import (
     is_immortal,
     killer_can_kill_protagonist,
@@ -372,10 +373,15 @@ def resolve_incident_phase(state: GameState, decide) -> None:
         raise RuntimeError(f"事件判定が要確認になった（シミュレータ前提バグ）: {res.reasons}")
     # ★eligible＝この瞬間「生存かつ不安臨界以上」のキャラ（公開情報＝卓上の不安カウンターから
     #   誰でも数えられる）。発生→犯人∈eligible／不発→犯人∉eligible の強い絞り込みに使う。
+    #   ★W4（2026-09-04・§72-135）：A.I. だけは特性②（KB 30:50＝全カウンターを不安として扱う）
+    #   で臨界判定する＝上の resolve_incident と**同じ関数**（engine 側が単一ソース）を通す。
+    #   A.I. 以外は effective_unrest_for_incident が素の unrest を返す＝従来と同一式。
+    #   卓上の友好・暗躍・護衛カウンターも公開情報なので、主人公が数えられる範囲は変わらない。
     from engine.data import unrest_threshold_of as _th
     eligible = sorted(
         n for n, c in state.characters.items()
-        if c.alive and c.on_board and _th(n) is not None and c.unrest >= _th(n))
+        if c.alive and c.on_board and _th(n) is not None
+        and effective_unrest_for_incident(c) >= _th(n))
     _pub(state, {"event": "incident", "name": inc.name, "occurs": res.occurs,
                  "eligible": eligible})
     _sec(state, {"event": "incident", "name": inc.name, "occurs": res.occurs,
@@ -557,15 +563,20 @@ def _alive_on_board(state: GameState) -> list:
 
 def resolve_turn_end(state: GameState, decide) -> None:
     _update_virus_serial(state)
+    # 【強制】シリアルキラー：同時解決（相打ち対応）。犠牲者算定は engine.turn_end_rules に集約。
+    # ★B-30b（E-3b A1）：大物SKはテリトリーの単独キャラを「いるものとして」殺害しうる。
+    # ★T14（ユーザー裁定 2026-09-06）：アルバイトの「合計カウンター3以上で死亡」（KB: 30）も
+    #   ターン終了の【強制】＝SK の殺害と**同時解決**（00:176）。旧実装はアルバイトの死亡を先に
+    #   解決していたので、ウイルスSK化したアルバイトが2人きりの相手を殺せなかった
+    #   （seed11 L2D4＝相手が TT〔不死〕だったので結果は同じだったが、死ねる相手なら差が出る）。
+    #   ∴ 犠牲者は**アルバイト生存のまま**算定し、アルバイトの死亡と犠牲者の死亡を続けて適用する。
+    victims = serial_killer_victims(
+        _alive_on_board(state), lambda c: _is_serial(state, c),
+        oomono_territory=getattr(state.script, "oomono_territory", None))
     # アルバイトの総カウンター3以上で死亡（KB: 30）。死亡なら次ターン開始にアルバイト？配置。
     check_alubaito_death(state)
     if state.loop_end_triggered:
         return
-    # 【強制】シリアルキラー：同時解決（相打ち対応）。犠牲者算定は engine.turn_end_rules に集約。
-    # ★B-30b（E-3b A1）：大物SKはテリトリーの単独キャラを「いるものとして」殺害しうる。
-    victims = serial_killer_victims(
-        _alive_on_board(state), lambda c: _is_serial(state, c),
-        oomono_territory=getattr(state.script, "oomono_territory", None))
     for v in sorted(victims):
         kill_character(state, v, "シリアルキラー【強制】")
         if state.loop_end_triggered:

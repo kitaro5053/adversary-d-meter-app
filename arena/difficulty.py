@@ -75,8 +75,10 @@ def run_perfect_info_game(script, seed: int) -> GameState:
         state.history.append({"loop": 0, "day": 0, "event": "role_reveal",
                               "name": n, "role": script.role_of(n)})
         state.revealed_roles[n] = script.role_of(n)
-    state.history.append({"loop": 0, "day": 0, "event": "rule_reveal",
-                          "rule_x": script.rule_x})
+    # ★BTX はルールXが2つ（`script.rule_xs`）＝両方を開示イベントとして注入する（§72-128 申し送り＝
+    #   以前は `rule_x` のみで `rule_x2` を入れていなかった）。FS は1つだけ＝従来と同じ1イベント。
+    for _rx in script.rule_xs:
+        state.history.append({"loop": 0, "day": 0, "event": "rule_reveal", "rule_x": _rx})
     # 犯人も全公開（「全ての情報」＝配役＋ルール＋犯人。事件対策の判断材料）
     for inc in script.incidents:
         state.history.append({"loop": 0, "event": "culprit_reveal",

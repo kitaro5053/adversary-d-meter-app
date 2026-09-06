@@ -1,0 +1,2 @@
+# 5日級 perm=rot1 mode=b40: {'D1': 28, 'D2': 71, 'D4': 1, 'D5': 1} 決定6106
+→ arena/b289_results/lint_d5_rot1_b40.json

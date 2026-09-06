@@ -1,0 +1,72 @@
+================================================================================================================
+条件          形         第1層(N→N+1)    累積    再封   Σmm    Δ    平均ltw   def(参考)  D1  D2  非decoy  C279
+d3_id       off              164   176   157   289   +0    3.064       132  23  48       0   183
+d3_id       ab               144   156   126   284   -5    3.029       132  19  57       0   178
+d3_id       abg              149   156   140   286   -3    3.043       133  21  58       0   163
+d3_id       abge             172   181   160   290   +1    3.071       133  21  49       0   188
+----------------------------------------------------------------------------------------------------------------
+d3_rev      off              182   207   164   250   +0    2.786       138  22  70       0   155
+d3_rev      ab               170   181   160   253   +3    2.807       138  16  79       0   160
+d3_rev      abg              184   195   171   249   -1    2.779       138  22  70       0   160
+d3_rev      abge             185   201   171   246   -4    2.757       139  22  70       0   157
+----------------------------------------------------------------------------------------------------------------
+d3_h1       off              156   170   146   225   +0    2.607       139  20  65       0   130
+d3_h1       ab               144   154   133   230   +5    2.643       138  18  70       0   132
+d3_h1       abg              156   166   142   229   +4    2.636       138  20  71       0   114
+d3_h1       abge             168   178   154   222   -3    2.586       140  20  66       0   130
+----------------------------------------------------------------------------------------------------------------
+d3_rot1     off              164   177   157   292   +0    3.086       131  24  56       0   184
+d3_rot1     ab               144   156   126   286   -6    3.043       131  20  65       0   178
+d3_rot1     abg              149   156   140   288   -4    3.057       132  22  66       0   163
+d3_rot1     abge             172   181   160   292   +0    3.086       132  22  57       0   188
+----------------------------------------------------------------------------------------------------------------
+Σ第2層  off=1056
+  ab: Σ=1053  Δ合計=-3  perm別Δ=[-5, 3, 5, -6]  第3層符号一致=NO(混在)
+  abg: Σ=1052  Δ合計=-4  perm別Δ=[-3, -1, 4, -4]  第3層符号一致=NO(混在)
+  abge: Σ=1050  Δ合計=-6  perm別Δ=[1, -4, -3, 0]  第3層符号一致=NO(混在)
+
+== 番人（複線演出の非decoy／mm_lint）==
+  d3_id off: 非decoy=0 ボード暗躍1087席/寄与なし62(ダミー62) lint={'D1': 23, 'D2': 48} 結末={'defense': 132, 'fb_loss': 8}
+  d3_id ab: 非decoy=0 ボード暗躍1028席/寄与なし62(ダミー62) lint={'D1': 19, 'D2': 57} 結末={'defense': 132, 'fb_loss': 8}
+  d3_id abg: 非decoy=0 ボード暗躍1034席/寄与なし62(ダミー62) lint={'D1': 21, 'D2': 58} 結末={'defense': 133, 'fb_loss': 7}
+  d3_id abge: 非decoy=0 ボード暗躍1081席/寄与なし62(ダミー62) lint={'D1': 21, 'D2': 49} 結末={'defense': 133, 'fb_loss': 7}
+  d3_rev off: 非decoy=0 ボード暗躍933席/寄与なし68(ダミー68) lint={'D1': 22, 'D2': 70} 結末={'defense': 138, 'fb_loss': 1, 'fb_win': 1}
+  d3_rev ab: 非decoy=0 ボード暗躍895席/寄与なし68(ダミー68) lint={'D1': 16, 'D2': 79} 結末={'defense': 138, 'fb_win': 2}
+  d3_rev abg: 非decoy=0 ボード暗躍928席/寄与なし68(ダミー68) lint={'D1': 22, 'D2': 70} 結末={'defense': 138, 'fb_win': 2}
+  d3_rev abge: 非decoy=0 ボード暗躍920席/寄与なし68(ダミー68) lint={'D1': 22, 'D2': 70} 結末={'defense': 139, 'fb_win': 1}
+  d3_h1 off: 非decoy=0 ボード暗躍796席/寄与なし58(ダミー58) lint={'D1': 20, 'D2': 65} 結末={'defense': 139, 'loss': 1}
+  d3_h1 ab: 非decoy=0 ボード暗躍774席/寄与なし58(ダミー58) lint={'D1': 18, 'D2': 70} 結末={'defense': 138, 'fb_loss': 1, 'fb_win': 1}
+  d3_h1 abg: 非decoy=0 ボード暗躍781席/寄与なし58(ダミー58) lint={'D1': 20, 'D2': 71} 結末={'defense': 138, 'fb_loss': 1, 'fb_win': 1}
+  d3_h1 abge: 非decoy=0 ボード暗躍797席/寄与なし58(ダミー58) lint={'D1': 20, 'D2': 66} 結末={'defense': 140}
+  d3_rot1 off: 非decoy=0 ボード暗躍1088席/寄与なし62(ダミー62) lint={'D1': 24, 'D2': 56} 結末={'defense': 131, 'fb_loss': 9}
+  d3_rot1 ab: 非decoy=0 ボード暗躍1028席/寄与なし62(ダミー62) lint={'D1': 20, 'D2': 65} 結末={'defense': 131, 'fb_loss': 9}
+  d3_rot1 abg: 非decoy=0 ボード暗躍1034席/寄与なし62(ダミー62) lint={'D1': 22, 'D2': 66} 結末={'defense': 132, 'fb_loss': 8}
+  d3_rot1 abge: 非decoy=0 ボード暗躍1081席/寄与なし62(ダミー62) lint={'D1': 22, 'D2': 57} 結末={'defense': 132, 'fb_loss': 8}
+
+== flip 全数（off→各形）==
+d3_id ab: revenge#1:3(defe)→2(defe)[-1]  revenge#2:3(defe)→2(defe)[-1]  revenge#4:3(defe)→2(defe)[-1]  revenge#5:3(defe)→2(defe)[-1]  revenge#6:3(defe)→2(defe)[-1]  revenge#8:3(defe)→2(defe)[-1]  random_FS#8:5(defe)→8(defe)[+3]  random_BTX#6:7(defe)→5(defe)[-2]  random_BTX#8:6(defe)→4(defe)[-2]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_id abg: random_FS#8:5(defe)→8(defe)[+3]  random_BTX#1:9(fb_l)→5(defe)[-4]  random_BTX#6:7(defe)→5(defe)[-2]  random_BTX#8:6(defe)→4(defe)[-2]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_id abge: random_FS#8:5(defe)→8(defe)[+3]  random_BTX#1:9(fb_l)→5(defe)[-4]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_rev ab: revenge#0:2(defe)→3(defe)[+1]  revenge#1:2(defe)→3(defe)[+1]  revenge#2:2(defe)→3(defe)[+1]  revenge#3:2(defe)→3(defe)[+1]  revenge#4:2(defe)→3(defe)[+1]  revenge#5:2(defe)→3(defe)[+1]  revenge#6:2(defe)→3(defe)[+1]  revenge#7:2(defe)→3(defe)[+1]  revenge#8:2(defe)→3(defe)[+1]  revenge#9:2(defe)→3(defe)[+1]  shrine#4:4(defe)→3(defe)[-1]  random_FS#18:6(defe)→4(defe)[-2]  random_BTX#1:7(defe)→2(defe)[-5]  random_BTX#6:9(fb_l)→3(defe)[-6]  random_BTX#8:4(defe)→9(fb_w)[+5]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_rev abg: random_FS#18:6(defe)→4(defe)[-2]  random_BTX#6:9(fb_l)→3(defe)[-6]  random_BTX#8:4(defe)→9(fb_w)[+5]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_rev abge: random_BTX#6:9(fb_l)→3(defe)[-6]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_h1 ab: revenge#0:2(defe)→3(defe)[+1]  revenge#7:2(defe)→3(defe)[+1]  shrine#8:4(defe)→3(defe)[-1]  random_FS#6:9(loss)→5(defe)[-4]  random_BTX#1:6(defe)→9(fb_l)[+3]  random_BTX#8:5(defe)→9(fb_w)[+4]  random_BTX#15:3(defe)→2(defe)[-1]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_h1 abg: random_FS#6:9(loss)→5(defe)[-4]  random_BTX#1:6(defe)→9(fb_l)[+3]  random_BTX#8:5(defe)→9(fb_w)[+4]  random_BTX#15:3(defe)→2(defe)[-1]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_h1 abge: random_FS#6:9(loss)→5(defe)[-4]  random_BTX#15:3(defe)→2(defe)[-1]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_rot1 ab: revenge#1:3(defe)→2(defe)[-1]  revenge#2:3(defe)→2(defe)[-1]  revenge#4:3(defe)→2(defe)[-1]  revenge#5:3(defe)→2(defe)[-1]  revenge#6:3(defe)→2(defe)[-1]  revenge#8:3(defe)→2(defe)[-1]  random_FS#8:5(defe)→8(defe)[+3]  random_BTX#6:7(defe)→5(defe)[-2]  random_BTX#8:6(defe)→4(defe)[-2]  random_BTX#15:3(defe)→2(defe)[-1]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_rot1 abg: random_FS#8:5(defe)→8(defe)[+3]  random_BTX#1:9(fb_l)→5(defe)[-4]  random_BTX#6:7(defe)→5(defe)[-2]  random_BTX#8:6(defe)→4(defe)[-2]  random_BTX#15:3(defe)→2(defe)[-1]  random_BTX#16:6(defe)→8(defe)[+2]
+d3_rot1 abge: random_FS#8:5(defe)→8(defe)[+3]  random_BTX#1:9(fb_l)→5(defe)[-4]  random_BTX#15:3(defe)→2(defe)[-1]  random_BTX#16:6(defe)→8(defe)[+2]
+
+== 形どうしの per-game 一致（bit 同値の検問）==
+  d3_id off vs ab: 帰結の違う局 = 10
+  d3_id off vs abg: 帰結の違う局 = 5
+  d3_id off vs abge: 帰結の違う局 = 3
+  d3_rev off vs ab: 帰結の違う局 = 16
+  d3_rev off vs abg: 帰結の違う局 = 4
+  d3_rev off vs abge: 帰結の違う局 = 2
+  d3_h1 off vs ab: 帰結の違う局 = 8
+  d3_h1 off vs abg: 帰結の違う局 = 5
+  d3_h1 off vs abge: 帰結の違う局 = 3
+  d3_rot1 off vs ab: 帰結の違う局 = 11
+  d3_rot1 off vs abg: 帰結の違う局 = 6
+  d3_rot1 off vs abge: 帰結の違う局 = 4

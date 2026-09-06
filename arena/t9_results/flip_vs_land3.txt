@@ -1,0 +1,61 @@
+[t9on d3] 集計一致=False  per-game flip=1  rows bit一致=False
+    ('btx_future', 2) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 5, 'outcome': 'defense', 'race': 'protagonist'}
+[t9on d5] 集計一致=False  per-game flip=9  rows bit一致=False
+    ('btx5_future', 0) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 2) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 3) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 4) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 5) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 4, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 6) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 5, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 7) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 8) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('random_BTX', 2) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 6, 'outcome': 'defense', 'race': 'protagonist'}
+[t9onv2 d3] 集計一致=True  per-game flip=0  rows bit一致=True
+[t9onv2 d5] 集計一致=False  per-game flip=5  rows bit一致=False
+    ('btx5_future', 0) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 2) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 4) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 7) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 8) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+[t9onv3 d3] 集計一致=True  per-game flip=0  rows bit一致=True
+[t9onv3 d5] 集計一致=True  per-game flip=0  rows bit一致=True
+[t79 d3] 集計一致=False  per-game flip=4  rows bit一致=False
+    ('btx_future', 2) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 5, 'outcome': 'defense', 'race': 'protagonist'}
+    ('random_BTX', 2) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 9, 'outcome': 'fb_loss', 'race': 'protagonist'}
+    ('random_BTX', 7) OFF: {'loops_to_win': 4, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'}
+    ('random_BTX', 11) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'}
+[t79 d5] 集計一致=False  per-game flip=12  rows bit一致=False
+    ('btx5_future', 0) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 2) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 3) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 9, 'outcome': 'fb_win', 'race': 'protagonist'}
+    ('btx5_future', 4) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 5) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 4, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 6) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 5, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 7) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 8) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 9) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 8, 'outcome': 'defense', 'race': 'protagonist'}
+    ('random_BTX', 1) OFF: {'loops_to_win': 4, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 9, 'outcome': 'fb_win', 'race': 'protagonist'}
+    ('random_BTX', 2) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 6, 'outcome': 'defense', 'race': 'protagonist'}
+    ('random_BTX', 10) OFF: {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'}
+[t79v2 d3] 集計一致=False  per-game flip=3  rows bit一致=False
+    ('random_BTX', 2) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 9, 'outcome': 'fb_loss', 'race': 'protagonist'}
+    ('random_BTX', 7) OFF: {'loops_to_win': 4, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'}
+    ('random_BTX', 11) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'}
+[t79v2 d5] 集計一致=False  per-game flip=9  rows bit一致=False
+    ('btx5_future', 0) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 1) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 6, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 2) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 4) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 7) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 8) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 9) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 8, 'outcome': 'defense', 'race': 'protagonist'}
+    ('random_BTX', 1) OFF: {'loops_to_win': 4, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 9, 'outcome': 'fb_win', 'race': 'protagonist'}
+    ('random_BTX', 10) OFF: {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'}
+[t79v3 d3] 集計一致=False  per-game flip=3  rows bit一致=False
+    ('random_BTX', 2) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 9, 'outcome': 'fb_loss', 'race': 'protagonist'}
+    ('random_BTX', 7) OFF: {'loops_to_win': 4, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'}
+    ('random_BTX', 11) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'}
+[t79v3 d5] 集計一致=False  per-game flip=3  rows bit一致=False
+    ('btx5_future', 1) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 6, 'outcome': 'defense', 'race': 'protagonist'}
+    ('random_BTX', 1) OFF: {'loops_to_win': 4, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 9, 'outcome': 'fb_win', 'race': 'protagonist'}
+    ('random_BTX', 10) OFF: {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'}

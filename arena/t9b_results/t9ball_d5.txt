@@ -1,0 +1,9 @@
+T9b arm=all days=5 on=['T9B_E1_SK_DEST_EXEMPT', 'T9B_E2_LOSS_HEDGE', 'T9B_E6_GOODWILL_BAN_MEMORY', 'T9B_E3_ML_ONLY_COUNT']
+ループ数ベンチ: 80局 loops=8 days=5 PYTHONHASHSEED=0
+  平均 勝利までのループ数: 4.013（全敗12件は9として計上）
+  ★防衛可能な脚本のみ: 4.013（防衛不能0局は平均None＝FB勝負が最適な脚本）
+  結末: defense:68  fb_loss:10  loss:2
+  分布: L1:2  L2:21  L3:28  L4:8  L5:4  L6:3  L7:1  L8:1  L9:12
+  脚本別平均: btx5_future=2.3  btx5_seal=4.0  btx5_seal_cat=8.5  fs5_guard=3.0  random_BTX=3.8  random_FS=3.35
+  所要 84.4秒
+RC=0

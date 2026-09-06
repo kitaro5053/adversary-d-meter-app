@@ -304,6 +304,9 @@ def review_loop(history: list[dict], loop: int, set_name: str = "BTX") -> list[s
         elif k == "role_reveal":
             lines.append(f"- {d}日目：〈{e.get('name')}〉の役職が"
                          f"**{e.get('role')}** と公開")
+        elif k == "rule_reveal":
+            # 情報屋の友好能力（KB: 20:176）＝開示された名前だけを出す（他の秘匿は漏らさない）
+            lines.append(f"- {d}日目：ルールXの一つが **{e.get('rule_x')}** と公開")
         elif k == "protagonist_death":
             lines.append(f"- {d}日目：**主人公が死亡**")
         elif k == "loop_end":
@@ -331,6 +334,10 @@ def review_loop(history: list[dict], loop: int, set_name: str = "BTX") -> list[s
     for e in ev:
         if e.get("event") == "role_reveal":
             facts.append(f"**〈{e.get('name')}〉＝{e.get('role')}**（公開済み・確定）")
+    # ルールX公開（情報屋）
+    for e in ev:
+        if e.get("event") == "rule_reveal" and e.get("rule_x"):
+            facts.append(f"**ルールXの一つ＝{e.get('rule_x')}**（公開済み・確定）")
     # ループ終了時のボード暗躍（敗北条件の候補）
     for e in ev:
         if e.get("event") == "loop_board":

@@ -485,7 +485,11 @@ def _render_used_cards(state) -> None:
 
 
 def _char_detail_md(nm: str) -> str:
-    """キャラ1体の詳細（属性・エリア・友好能力の原文手順・特性の元テキスト）をmarkdownで返す。"""
+    """キャラ1体の詳細（属性・エリア・友好能力の原文手順・特性の原文）をmarkdownで返す。
+
+    ★表示するのはカードの本来のテキストだけ（注記＝CHARACTER_TRAIT_NOTES／GOODWILL_ABILITY_NOTES は出さない。
+    ユーザー指示 2026-09-06）。
+    """
     attrs = CHARACTER_ATTRIBUTES.get(nm, "—")
     init = CHARACTER_INITIAL_AREA.get(nm) or "脚本家指定"
     forb = "・".join(sorted(CHARACTER_FORBIDDEN.get(nm, frozenset()))) or "なし"
@@ -497,7 +501,7 @@ def _char_detail_md(nm: str) -> str:
         ab_parts.append(f'- **{head}**' + (f'  \n  {body}' if body else ""))
     ab_lines = "\n".join(ab_parts) or "- （友好能力なし）"
     trait = CHARACTER_TRAITS.get(nm)
-    trait_block = f'\n\n**特性（元テキスト）**：{trait}' if trait else ""
+    trait_block = f'\n\n**特性**：{trait}' if trait else ""
     return (f'**属性**：{attrs}　｜　**初期エリア**：{init}　｜　**禁止エリア**：{forb}'
             f'　｜　**不安臨界**：{th}\n\n**友好能力（カード原文の手順）**：\n{ab_lines}{trait_block}')
 
@@ -545,6 +549,22 @@ def resolve_gw_choice(groups: dict, ability_key, target_label):
     if target_label not in labels:
         return None
     return grp[labels.index(target_label)]
+
+
+def declare_context_label(choices: list[dict]) -> str:
+    """宣言決定（`doctor_unrest_mode`）の見出し＝直前に発動した友好能力の「〈キャラ〉『能力』」。
+
+    ★T13：宣言は発動した能力の直後に同じ席へ要求される（`sim/flow._run_goodwill_phase`）＝
+    人間の選択列 `choices` の末尾が goodwill_ability の選択。妹の肩代わり（target が
+    `大人|能力|対象`）は大人側の名前を出す。判別できなければ汎用の見出し。Streamlit 非依存。
+    """
+    last = choices[-1] if choices else None
+    if isinstance(last, dict) and last.get("character") and last.get("ability"):
+        ch, ab, tgt = last["character"], last["ability"], last.get("target")
+        if isinstance(tgt, str) and tgt.count("|") == 2:
+            ch, ab, _ = tgt.split("|", 2)
+        return f"〈{ch}〉『{ab}』"
+    return "『不安操作』"
 
 
 def _rule_header() -> None:
@@ -1588,6 +1608,15 @@ def render_play(mobile: bool = False, stable: bool = False) -> None:
                 if pending.decision == "final_battle_guess":
                     st.warning(f'⚔ 最後の戦い！ 〈{pending.options[0]["character"]}〉の役職を宣言してください。'
                                "全キャラ正解で逆転勝利、1つでも誤答で敗北です。")
+                elif pending.decision == "doctor_unrest_mode":
+                    # ★B-278：KB 20:228＝[主] で「取り除くか置くか」まで宣言する（空撃ち可）。
+                    #   この宣言のあとに脚本家が拒否を判断する（20:14-18）。
+                    # ★T13：宣言を持つのは医者『不安操作（除去/付与）』と教師『学生の不安操作』
+                    #   （20:112-116）＝直前に発動した能力（choices の末尾）からキャラ名を引く。
+                    _who = declare_context_label(choices)
+                    st.info(f"{_who}：**不安を除去するか付与するかを宣言**"
+                            "してください。対象に不安が無くても「除去」と宣言できます"
+                            "（空撃ち＝効果はありませんが、脚本家が拒否するかどうかは分かります）。")
 
                 def _opt_label(o: dict) -> str:
                     if "ability" in o and "target" in o:

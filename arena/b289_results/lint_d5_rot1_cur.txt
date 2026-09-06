@@ -1,0 +1,2 @@
+# 5日級 perm=rot1 mode=cur: {'D1': 24, 'D2': 72, 'D5': 1} 決定6031
+→ arena/b289_results/lint_d5_rot1_cur.json

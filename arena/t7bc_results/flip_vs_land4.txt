@@ -1,0 +1,13 @@
+[t7bcc2 d3] 集計一致=False  per-game flip=1  rows bit一致=False
+    ('random_BTX', 7) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 4, 'outcome': 'defense', 'race': 'protagonist'}
+[t7bcc2 d5] 集計一致=True  per-game flip=0  rows bit一致=True
+[t7bcv2 d3] 集計一致=False  per-game flip=1  rows bit一致=False
+    ('random_BTX', 7) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 4, 'outcome': 'defense', 'race': 'protagonist'}
+[t7bcv2 d5] 集計一致=False  per-game flip=2  rows bit一致=False
+    ('btx5_future', 1) OFF: {'loops_to_win': 6, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'}
+    ('random_BTX', 10) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}
+[t7bcc2v2 d3] 集計一致=False  per-game flip=1  rows bit一致=False
+    ('random_BTX', 7) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 4, 'outcome': 'defense', 'race': 'protagonist'}
+[t7bcc2v2 d5] 集計一致=False  per-game flip=2  rows bit一致=False
+    ('btx5_future', 1) OFF: {'loops_to_win': 6, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'}
+    ('random_BTX', 10) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 1, 'outcome': 'defense', 'race': 'protagonist'}

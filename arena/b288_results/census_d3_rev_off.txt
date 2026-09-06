@@ -1,0 +1,241 @@
+  basic s0: 3 defense 席0
+  basic s1: 3 defense 席0
+  basic s2: 3 defense 席0
+  basic s3: 3 defense 席0
+  basic s4: 3 defense 席0
+  basic s5: 3 defense 席0
+  basic s6: 3 defense 席0
+  basic s7: 3 defense 席0
+  basic s8: 3 defense 席0
+  basic s9: 3 defense 席0
+  guard s0: 2 defense 席0
+  guard s1: 2 defense 席0
+  guard s2: 2 defense 席0
+  guard s3: 2 defense 席0
+  guard s4: 2 defense 席0
+  guard s5: 2 defense 席0
+  guard s6: 2 defense 席0
+  guard s7: 2 defense 席0
+  guard s8: 2 defense 席0
+  guard s9: 2 defense 席0
+  revenge s0: 2 defense 席1
+  revenge s1: 2 defense 席1
+  revenge s2: 2 defense 席1
+  revenge s3: 2 defense 席1
+  revenge s4: 2 defense 席1
+  revenge s5: 2 defense 席1
+  revenge s6: 2 defense 席1
+  revenge s7: 2 defense 席1
+  revenge s8: 2 defense 席1
+  revenge s9: 2 defense 席1
+  shrine s0: 2 defense 席1
+  shrine s1: 2 defense 席1
+  shrine s2: 2 defense 席1
+  shrine s3: 2 defense 席1
+  shrine s4: 4 defense 席3
+  shrine s5: 2 defense 席1
+  shrine s6: 2 defense 席1
+  shrine s7: 2 defense 席1
+  shrine s8: 3 defense 席2
+  shrine s9: 3 defense 席2
+  btx_seal s0: 4 defense 席1
+  btx_seal s1: 5 defense 席1
+  btx_seal s2: 5 defense 席1
+  btx_seal s3: 5 defense 席1
+  btx_seal s4: 5 defense 席1
+  btx_seal s5: 4 defense 席1
+  btx_seal s6: 4 defense 席1
+  btx_seal s7: 4 defense 席1
+  btx_seal s8: 5 defense 席1
+  btx_seal s9: 5 defense 席1
+  btx_future s0: 4 defense 席0
+  btx_future s1: 4 defense 席0
+  btx_future s2: 4 defense 席0
+  btx_future s3: 4 defense 席0
+  btx_future s4: 4 defense 席0
+  btx_future s5: 4 defense 席0
+  btx_future s6: 4 defense 席0
+  btx_future s7: 9 fb_win 席0
+  btx_future s8: 6 defense 席0
+  btx_future s9: 4 defense 席0
+  btx_bomb s0: 1 defense 席0
+  btx_bomb s1: 1 defense 席0
+  btx_bomb s2: 1 defense 席0
+  btx_bomb s3: 1 defense 席0
+  btx_bomb s4: 1 defense 席0
+  btx_bomb s5: 1 defense 席0
+  btx_bomb s6: 1 defense 席0
+  btx_bomb s7: 1 defense 席0
+  btx_bomb s8: 1 defense 席0
+  btx_bomb s9: 1 defense 席0
+  btx_contract s0: 3 defense 席0
+  btx_contract s1: 3 defense 席0
+  btx_contract s2: 2 defense 席0
+  btx_contract s3: 3 defense 席0
+  btx_contract s4: 3 defense 席0
+  btx_contract s5: 3 defense 席0
+  btx_contract s6: 2 defense 席0
+  btx_contract s7: 2 defense 席0
+  btx_contract s8: 3 defense 席0
+  btx_contract s9: 3 defense 席0
+  btx_lovers s0: 2 defense 席0
+  btx_lovers s1: 2 defense 席0
+  btx_lovers s2: 2 defense 席0
+  btx_lovers s3: 2 defense 席0
+  btx_lovers s4: 2 defense 席0
+  btx_lovers s5: 2 defense 席0
+  btx_lovers s6: 2 defense 席0
+  btx_lovers s7: 2 defense 席0
+  btx_lovers s8: 2 defense 席0
+  btx_lovers s9: 2 defense 席0
+  btx_seal_cat s0: 3 defense 席1
+  btx_seal_cat s1: 3 defense 席1
+  btx_seal_cat s2: 3 defense 席1
+  btx_seal_cat s3: 3 defense 席1
+  btx_seal_cat s4: 3 defense 席1
+  btx_seal_cat s5: 3 defense 席1
+  btx_seal_cat s6: 3 defense 席1
+  btx_seal_cat s7: 3 defense 席1
+  btx_seal_cat s8: 3 defense 席1
+  btx_seal_cat s9: 3 defense 席1
+  random_FS s0: 3 defense 席2
+  random_FS s1: 2 defense 席0
+  random_FS s2: 2 defense 席0
+  random_FS s3: 3 defense 席2
+  random_FS s4: 2 defense 席0
+  random_FS s5: 1 defense 席0
+  random_FS s6: 2 defense 席0
+  random_FS s7: 2 defense 席1
+  random_FS s8: 2 defense 席0
+  random_FS s9: 3 defense 席2
+  random_FS s10: 2 defense 席1
+  random_FS s11: 2 defense 席0
+  random_FS s12: 2 defense 席1
+  random_FS s13: 4 defense 席0
+  random_FS s14: 1 defense 席0
+  random_FS s15: 2 defense 席0
+  random_FS s16: 2 defense 席0
+  random_FS s17: 3 defense 席0
+  random_FS s18: 6 defense 席5
+  random_FS s19: 2 defense 席0
+  random_BTX s0: 2 defense 席1
+  random_BTX s1: 7 defense 席6
+  random_BTX s2: 2 defense 席0
+  random_BTX s3: 3 defense 席1
+  random_BTX s4: 4 defense 席3
+  random_BTX s5: 2 defense 席1
+  random_BTX s6: 9 fb_loss 席11
+  random_BTX s7: 4 defense 席3
+  random_BTX s8: 4 defense 席2
+  random_BTX s9: 1 defense 席0
+  random_BTX s10: 1 defense 席0
+  random_BTX s11: 2 defense 席0
+  random_BTX s12: 6 defense 席0
+  random_BTX s13: 3 defense 席0
+  random_BTX s14: 2 defense 席0
+  random_BTX s15: 2 defense 席1
+  random_BTX s16: 6 defense 席5
+  random_BTX s17: 3 defense 席2
+  random_BTX s18: 3 defense 席2
+  random_BTX s19: 2 defense 席0
+# B-288 センサス（3日級・perm=rev・mode=off）
+母集団＝ループ開始時点の mem_extra 板席（B-287 が降りる席）= 96（うちゴール板 96）
+
+## ゴール板席: 96席
+  (i)  決定時点の静的会計『今ループ完成しうる』= 96/96 (100.0%)
+  (ii) ★反実の真値『実際にその板が ≥2 に届いた』= 22/96 (22.9%)
+  (参考) その席のループを脚本家が取った = 37/96
+  クロス表 (会計, 真値) = (True, False):74  (True, True):22
+  終了時の板の値の分布 = 0:13  1:61  2:17  3:4  4:1
+  ★席側の公開実績『直前ループ終了時に ≥2 だった』= 58/96
+    クロス表 (直前≥2, 今ループ真値) = (False, False):23  (False, True):15  (True, False):51  (True, True):7
+  ★席側の公開実績『過去いずれかのループで ≥2』= 84/96
+    クロス表 (過去≥2, 今ループ真値) = (False, False):7  (False, True):5  (True, False):67  (True, True):17
+  乗り換え先ありの席（alt_n>0）= 83/96（うち直前≥2 = 45／今ループ真値 = 21）
+## 非ゴール板席: 0席
+
+## 全席の明細（alt_n>0＝全面降りが起きうる席のみ）
+  revenge#0 L2 学校 直前=2 今end=1 真値=0 取=0 alt=['刑事', '医者']
+  revenge#1 L2 学校 直前=2 今end=1 真値=0 取=0 alt=['刑事', '医者']
+  revenge#2 L2 学校 直前=2 今end=1 真値=0 取=0 alt=['刑事', '医者']
+  revenge#3 L2 学校 直前=2 今end=1 真値=0 取=0 alt=['刑事', '医者']
+  revenge#4 L2 学校 直前=2 今end=1 真値=0 取=0 alt=['刑事', '医者']
+  revenge#5 L2 学校 直前=2 今end=1 真値=0 取=0 alt=['刑事', '医者']
+  revenge#6 L2 学校 直前=2 今end=1 真値=0 取=0 alt=['刑事', '医者']
+  revenge#7 L2 学校 直前=2 今end=1 真値=0 取=0 alt=['刑事', '医者']
+  revenge#8 L2 学校 直前=2 今end=1 真値=0 取=0 alt=['刑事', '医者']
+  revenge#9 L2 学校 直前=2 今end=1 真値=0 取=0 alt=['刑事', '医者']
+  shrine#0 L2 都市 直前=2 今end=1 真値=0 取=0 alt=['刑事']
+  shrine#1 L2 都市 直前=2 今end=1 真値=0 取=0 alt=['刑事']
+  shrine#2 L2 都市 直前=2 今end=1 真値=0 取=0 alt=['刑事']
+  shrine#3 L2 都市 直前=2 今end=1 真値=0 取=0 alt=['刑事']
+  shrine#4 L2 都市 直前=2 今end=2 真値=1 取=1 alt=['刑事']
+  shrine#4 L3 都市 直前=2 今end=2 真値=1 取=1 alt=['刑事']
+  shrine#4 L4 都市 直前=2 今end=1 真値=0 取=0 alt=['刑事']
+  shrine#5 L2 都市 直前=2 今end=1 真値=0 取=0 alt=['刑事']
+  shrine#6 L2 都市 直前=2 今end=1 真値=0 取=0 alt=['刑事']
+  shrine#7 L2 都市 直前=2 今end=1 真値=0 取=0 alt=['刑事']
+  shrine#8 L2 都市 直前=2 今end=2 真値=1 取=1 alt=['刑事']
+  shrine#8 L3 都市 直前=2 今end=1 真値=0 取=0 alt=['刑事']
+  shrine#9 L2 都市 直前=2 今end=2 真値=1 取=1 alt=['刑事']
+  shrine#9 L3 都市 直前=2 今end=1 真値=0 取=0 alt=['刑事']
+  btx_seal#0 L4 神社 直前=1 今end=1 真値=0 取=0 alt=['刑事']
+  btx_seal#1 L5 神社 直前=1 今end=1 真値=0 取=0 alt=['刑事']
+  btx_seal#2 L5 神社 直前=1 今end=1 真値=0 取=0 alt=['刑事']
+  btx_seal#3 L5 神社 直前=1 今end=1 真値=0 取=0 alt=['刑事']
+  btx_seal#4 L5 神社 直前=1 今end=1 真値=0 取=0 alt=['刑事']
+  btx_seal#5 L4 神社 直前=1 今end=1 真値=0 取=0 alt=['刑事']
+  btx_seal#6 L4 神社 直前=1 今end=1 真値=0 取=0 alt=['刑事']
+  btx_seal#7 L4 神社 直前=1 今end=1 真値=0 取=0 alt=['刑事']
+  btx_seal#8 L5 神社 直前=1 今end=1 真値=0 取=0 alt=['刑事']
+  btx_seal#9 L5 神社 直前=1 今end=1 真値=0 取=0 alt=['刑事']
+  random_FS#0 L2 都市 直前=2 今end=0 真値=0 取=1 alt=['ナース']
+  random_FS#0 L3 都市 直前=0 今end=1 真値=0 取=0 alt=['ナース']
+  random_FS#3 L2 病院 直前=1 今end=0 真値=0 取=1 alt=['異世界人']
+  random_FS#3 L3 病院 直前=0 今end=2 真値=1 取=0 alt=['異世界人']
+  random_FS#7 L2 都市 直前=2 今end=1 真値=0 取=0 alt=['マスコミ']
+  random_FS#9 L2 都市 直前=2 今end=2 真値=1 取=1 alt=['異世界人', '鑑識官']
+  random_FS#9 L3 都市 直前=2 今end=1 真値=0 取=0 alt=['異世界人', '鑑識官']
+  random_FS#10 L2 学校 直前=1 今end=0 真値=0 取=0 alt=['ご神木', 'イレギュラー']
+  random_FS#12 L2 都市 直前=2 今end=0 真値=0 取=0 alt=['女の子']
+  random_FS#18 L3 学校 直前=0 今end=1 真値=0 取=1 alt=['教師']
+  random_FS#18 L4 学校 直前=1 今end=2 真値=1 取=1 alt=['教師']
+  random_FS#18 L5 病院 直前=1 今end=2 真値=1 取=1 alt=['教師']
+  random_FS#18 L6 病院 直前=2 今end=1 真値=0 取=0 alt=['教師']
+  random_FS#18 L6 都市 直前=2 今end=1 真値=0 取=0 alt=['教師']
+  random_BTX#0 L2 神社 直前=1 今end=1 真値=0 取=0 alt=['巫女']
+  random_BTX#1 L2 神社 直前=3 今end=2 真値=1 取=1 alt=['女の子', '教師']
+  random_BTX#1 L3 神社 直前=2 今end=1 真値=0 取=1 alt=['女の子', '教師']
+  random_BTX#1 L4 神社 直前=1 今end=3 真値=1 取=1 alt=['女の子', '教師']
+  random_BTX#1 L5 神社 直前=3 今end=1 真値=0 取=1 alt=['女の子', '教師']
+  random_BTX#1 L6 神社 直前=1 今end=3 真値=1 取=1 alt=['女の子', '教師']
+  random_BTX#1 L7 神社 直前=3 今end=1 真値=0 取=0 alt=['女の子', '教師']
+  random_BTX#4 L2 神社 直前=2 今end=0 真値=0 取=1 alt=['アルバイト？']
+  random_BTX#4 L3 神社 直前=0 今end=0 真値=0 取=1 alt=['アルバイト？']
+  random_BTX#4 L4 神社 直前=0 今end=0 真値=0 取=0 alt=['アルバイト？']
+  random_BTX#5 L2 神社 直前=1 今end=1 真値=0 取=0 alt=['女子学生']
+  random_BTX#6 L3 神社 直前=1 今end=4 真値=1 取=1 alt=['お嬢様', '幻想']
+  random_BTX#6 L4 病院 直前=0 今end=2 真値=1 取=1 alt=['お嬢様', '幻想']
+  random_BTX#6 L4 神社 直前=4 今end=0 真値=0 取=1 alt=['お嬢様', '幻想']
+  random_BTX#6 L5 病院 直前=2 今end=0 真値=0 取=1 alt=['お嬢様', '幻想']
+  random_BTX#6 L5 神社 直前=0 今end=3 真値=1 取=1 alt=['お嬢様', '幻想']
+  random_BTX#6 L6 病院 直前=0 今end=2 真値=1 取=1 alt=['お嬢様', '幻想']
+  random_BTX#6 L6 神社 直前=3 今end=0 真値=0 取=1 alt=['お嬢様', '幻想']
+  random_BTX#6 L7 病院 直前=2 今end=0 真値=0 取=1 alt=['お嬢様', '幻想']
+  random_BTX#6 L7 神社 直前=0 今end=3 真値=1 取=1 alt=['お嬢様', '幻想']
+  random_BTX#6 L8 病院 直前=0 今end=2 真値=1 取=1 alt=['お嬢様', '幻想']
+  random_BTX#6 L8 神社 直前=3 今end=0 真値=0 取=1 alt=['お嬢様', '幻想']
+  random_BTX#7 L2 病院 直前=1 今end=1 真値=0 取=1 alt=['サラリーマン', '大物']
+  random_BTX#7 L3 病院 直前=1 今end=2 真値=1 取=1 alt=['サラリーマン', '大物']
+  random_BTX#7 L4 病院 直前=2 今end=1 真値=0 取=0 alt=['サラリーマン', '大物']
+  random_BTX#8 L3 神社 直前=1 今end=2 真値=1 取=1 alt=['巫女', '情報屋']
+  random_BTX#8 L4 神社 直前=2 今end=1 真値=0 取=0 alt=['巫女', '情報屋']
+  random_BTX#15 L2 神社 直前=1 今end=0 真値=0 取=0 alt=['女子学生', '従者']
+  random_BTX#16 L2 都市 直前=1 今end=1 真値=0 取=1 alt=['アルバイト？']
+  random_BTX#16 L3 都市 直前=1 今end=2 真値=1 取=1 alt=['アルバイト？']
+  random_BTX#16 L4 都市 直前=2 今end=1 真値=0 取=1 alt=['アルバイト？']
+  random_BTX#16 L5 都市 直前=1 今end=1 真値=0 取=1 alt=['アルバイト？']
+  random_BTX#16 L6 都市 直前=1 今end=1 真値=0 取=0 alt=['アルバイト？']
+  random_BTX#17 L2 病院 直前=1 今end=2 真値=1 取=1 alt=['マスコミ', '教祖', '男子学生']
+  random_BTX#17 L3 病院 直前=2 今end=1 真値=0 取=0 alt=['マスコミ', '教祖', '男子学生']
+→ arena/b288_results/census_d3_rev_off.json

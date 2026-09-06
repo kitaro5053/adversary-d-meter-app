@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from engine.data import is_student, unrest_threshold_of
 
-from .state import FS_RULE_X_ROLES, GameState
+from .state import GameState, rule_x_names
 
 _AREAS = ("病院", "神社", "都市", "学校")
 
@@ -135,7 +135,7 @@ def _remove_anyaku_apply(state, user, target):
             _pub(state, {"event": "anyaku", "target": target, "delta": -1})
 
 
-# ---- 医者／アイドル：同エリアの他キャラから不安1除去 ----
+# ---- アイドル／ナース：同エリアの他キャラから不安1除去（宣言なし・除去のみ） ----
 def _unrest_remove_apply(state, user, target):
     c = state.characters[target]
     if c.unrest > 0:
@@ -143,21 +143,36 @@ def _unrest_remove_apply(state, user, target):
         _pub(state, {"event": "unrest", "target": target, "delta": -1})
 
 
-# ---- 医者：同エリアの他キャラの不安を1「除去 or 付与」（KB: 20 医者能力1・除去/付与の選択）----
-def _doctor_unrest_apply(state, user, target, decide=None, actor=None):
+# ---- 医者・教師共通：対象の不安を1「除去 or 付与」＝[主] で宣言する（KB 20:228 医者／20:112-116 教師）----
+def _unrest_mode_declare_modes(state, user, target):
+    """★B-278／T13：[主] で宣言する内容の候補（医者＝KB `rules/20_goodwill_abilities.md:228`／
+    教師『学生の不安操作』＝`:112-116`）。決定名は互換のため両者とも `doctor_unrest_mode`。
+
+    「不安カウンターを取り除くか置くかも宣言する。**不安が置かれていないキャラを選び、
+    取り除くと宣言しても構わない（空撃ち可）**」＝**対象の不安に関係なく除去/付与の両方が
+    宣言できる**。旧実装は医者は不安0のとき候補を `add` だけにしていた（主人公が空撃ちを
+    選べず、冷却のつもりで撃った能力が**強制的に不安+1**）、教師は除去固定で付与が選べなかった
+    （T13・ユーザー報告 2026-09-06）＝どちらも KB 違反。
+    """
+    return [{"mode": "remove"}, {"mode": "add"}]
+
+
+def _unrest_mode_apply(state, user, target, declared=None):
+    """医者・教師共通の効果適用。除去/付与は [主] の宣言（＝拒否より前・`declare_ability`）で決まる。"""
     c = state.characters[target]
-    # 除去/付与を主人公が選ぶ（付与は事件の燃料になる＝ルール上できる。実装漏れだった）。
-    opts = ([{"mode": "remove"}] if c.unrest > 0 else []) + [{"mode": "add"}]
-    if decide is not None and len(opts) > 1:
-        mode = decide(actor, "doctor_unrest_mode", opts)["mode"]
-    else:
-        mode = opts[0]["mode"]
+    mode = (declared or {}).get("mode") or "remove"
     if mode == "add":
         c.unrest += 1
         _pub(state, {"event": "unrest", "target": target, "delta": 1})
     elif c.unrest > 0:
         c.unrest -= 1
         _pub(state, {"event": "unrest", "target": target, "delta": -1})
+    # mode == "remove" かつ不安0＝空撃ち（宣言は合法・効果なし）。KB: 20:228／20:114
+
+
+# 旧名（B-278 当時の医者専用名）＝後方互換の別名。
+_doctor_unrest_modes = _unrest_mode_declare_modes
+_doctor_unrest_apply = _unrest_mode_apply
 
 
 # ---- アイドル：同エリアの他キャラに友好1付与 ----
@@ -220,18 +235,35 @@ def _ojo_targets(state, user):
     return _same_area_others(state, user) if state.characters[user].area in ("学校", "都市") else []
 
 
-# ---- 情報屋：ルールX開示（宣言と異なる実ルールXを開示。FSはルールX1つ） ----
+# ---- 情報屋：ルールX開示（宣言された名前でないルールXを1つ開示） ----
 def _joho_targets(state, user):
-    return list(FS_RULE_X_ROLES)  # 宣言候補＝FSのルールX3種
+    """宣言候補＝**このゲームで用いている惨劇セット**に含まれるルールXの全名称。
+
+    KB: 20:175「その名前はゲームで用いている惨劇セットに含まれるルールXのものでなくてはならない」。
+    ★B-29x（2026-09-02）：以前は `FS_RULE_X_ROLES` を無条件で返していた＝BTX局でも FS の
+      ルールXしか宣言できなかった（実バグ・トリアージ A-1）。セットで引き分ける。
+    """
+    return list(rule_x_names(state.script.set_name))
 
 
 def _joho_apply(state, user, target):
-    actual = state.script.rule_x
-    if target != actual:  # 宣言が外れれば実ルールXが開示される（KB: 20）
-        _pub(state, {"event": "rule_reveal", "rule_x": actual})
+    """脚本のルールXのうち**宣言された名前でないもの1つ**を開示する（KB: 20:176）。
+
+    ★条文は「宣言された名前でないもの1つを伝える」＝**必ず1つ開示される**。宣言が脚本の
+      ルールXのどちらでもない場合は「どちらを伝えても構わない」＝実装は**定義順の先頭**を選ぶ
+      （`PYTHONHASHSEED=0` に依らず決定的＝set の反復順に依存しない）。
+    ★B-29x（2026-09-02）：以前は `state.script.rule_x` としか比較せず、
+      (i) 宣言が rule_x と一致すると何も開示しない (ii) BTX の rule_x2 を扱わない、の2つの
+      欠陥があった（実バグ・トリアージ A-2(a)）。
+    ※脚本のルールXが宣言名しか無い（FSで宣言が的中）場合は「宣言された名前でないもの」が
+      存在しない＝開示は起きない（条文が伝えるものを持たない）。
+    """
+    rest = [rx for rx in state.script.rule_xs if rx != target]
+    if rest:
+        _pub(state, {"event": "rule_reveal", "rule_x": rest[0]})
 
 
-# ---- 教師：学生の不安操作（同エリアの学生から不安1除去） ----
+# ---- 教師：学生の不安操作（同エリアの学生の不安を除去 or 付与＝宣言は医者と共通） ----
 def _teacher_student_targets(state, user):
     return [n for n in _same_area_others(state, user) if is_student(n)]
 
@@ -408,13 +440,17 @@ def _onnanoko_lift_apply(state, user, target):
     _pub(state, {"event": "forbidden_lifted", "name": user})
 
 
-# ---- 女の子：隣接ボードへ移動（1/L・友好3。学校固定を越える移動能力＝禁止エリアに縛られない） ----
-#      ★KB(30)は「隣接ボードへ移動」の一行のみ。このカードの主眼は学校固定の脱出＝移動能力
-#      なので、自身の禁止エリア（病院/神社/都市）にも移動できる解釈を採る（要確認だが最も自然）。
+# ---- 女の子：隣接ボードへ移動（1/L・友好3） ----
+#      ★C2（ユーザー裁定 2026-09-06・KB: 20/30）：♡3 は♡1「禁止エリア解除」の使用が前提＝
+#      このループ中に禁止エリアを失っていない（`state.forbidden_lifted` に居ない）なら候補なし。
+#      解除後は禁止エリアが無いので、隣接ボードのどちらへも移動できる（旧実装の「禁止エリアにも
+#      移動できる解釈（要確認）」は、この前提により問題が消えた）。
 def _onnanoko_move_targets(state, user):
     from engine.board import destination
     u = state.characters[user]
     if u.area is None:
+        return []
+    if user not in getattr(state, "forbidden_lifted", ()):
         return []
     adj = {destination(u.area, (1, 0)), destination(u.area, (0, 1))}
     return sorted(adj - {u.area})
@@ -470,7 +506,9 @@ def _imouto_apply(state, user, target, decide=None, actor=None):
     from engine.data import goodwill_abilities_of
     adult, aname, t = target.split("|", 2)
     # 大人本人の友好コストは不要（妹が友好5で肩代わり）。効果はそのまま解決＝拒否不可。
-    apply_ability(state, adult, aname, t, decide=decide, actor=actor)
+    # ★B-278：借りた能力に [主] の宣言（例＝医者の除去/付与）があるならここで宣言させる。
+    _decl = declare_ability(state, adult, aname, t, decide=decide, actor=actor)
+    apply_ability(state, adult, aname, t, decide=decide, actor=actor, declared=_decl)
     for ab in goodwill_abilities_of(adult) or []:  # 借りた能力が1/Lなら回数制限を消費（参照）
         if ab["name"] == aname and ab["once_per_loop"]:
             state.used_goodwill.add((adult, aname))
@@ -516,7 +554,9 @@ ABILITY_IMPL: dict[tuple[str, str], dict] = {
                                             "apply": _remove_anyaku_apply,
                                             "board_scope": "self_board"},  # KB rules/20:153 自ボード
     ("医者", "不安操作（除去/付与）"): {"targets": _same_area_others,
-                                       "apply": _doctor_unrest_apply, "needs_decide": True},
+                                       "apply": _unrest_mode_apply,
+                                       # ★B-278：除去/付与は [主] の宣言＝拒否より前（KB 20:14-18/:228）
+                                       "declare": ("doctor_unrest_mode", _unrest_mode_declare_modes)},
     ("アイドル", "不安除去"): {"targets": _same_area_others, "apply": _unrest_remove_apply},
     ("アイドル", "友好+1付与"): {"targets": _same_area_others, "apply": _goodwill_grant_apply},
     ("ナース", "不安臨界以上のキャラの不安除去"): {"targets": _nurse_targets, "apply": _unrest_remove_apply},
@@ -526,7 +566,11 @@ ABILITY_IMPL: dict[tuple[str, str], dict] = {
     ("委員長", "使用済み1/Lカードを手札に戻す"): {"targets": _committee_targets, "apply": _committee_apply},
     ("お嬢様", "友好+1付与（学校/都市）"): {"targets": _ojo_targets, "apply": _goodwill_grant_apply},
     ("情報屋", "ルールX開示"): {"targets": _joho_targets, "apply": _joho_apply},
-    ("教師", "学生の不安操作"): {"targets": _teacher_student_targets, "apply": _unrest_remove_apply},
+    ("教師", "学生の不安操作"): {"targets": _teacher_student_targets,
+                               "apply": _unrest_mode_apply,
+                               # ★T13：KB 20:114＝「取り除くか置くかも宣言する（空撃ち可）」＝医者と同じ
+                               #   宣言機構（決定名は互換のため `doctor_unrest_mode` のまま）。
+                               "declare": ("doctor_unrest_mode", _unrest_mode_declare_modes)},
     ("教師", "学生の役職開示"): {"targets": _teacher_student_targets, "apply": _reveal_target_role_apply},
     ("異世界人", "同エリアのキャラ殺害"): {"targets": _same_area_others, "apply": _isekai_apply},
     ("異世界人", "死体蘇生"): {"targets": _isekai_revive_targets, "apply": _isekai_revive_apply},
@@ -586,13 +630,46 @@ def ability_targets(state: GameState, character: str, ability: str) -> list[str]
     return impl["targets"](state, character) if impl else []
 
 
+def declare_ability(state: GameState, character: str, ability: str, target: str,
+                    decide=None, actor: str | None = None) -> dict | None:
+    """★B-278：**[主] の宣言のうち対象以外の部分**（例＝医者の「除去／付与」）を決めさせる。
+
+    KB `rules/20_goodwill_abilities.md:14-18`（共通手順）＝
+      1. まずリーダーが [主] に書かれたことを**すべて**行う
+      2. **その後**、脚本家がその友好能力を拒否するか [脚] を行う
+    ∴ 宣言（対象＋除去/付与）は**拒否より前**に完結していなければならない。旧実装は
+    `apply_ability` の内側で選ばせていた＝**拒否された時は宣言の機会そのものが無かった**。
+
+    戻り値＝宣言の内容（`goodwill_used` に載せて公開し、拒否判断と効果適用に渡す）。
+    宣言する内容が無い能力は None。
+    """
+    impl = ABILITY_IMPL.get((character, ability))
+    spec = impl.get("declare") if impl else None
+    if spec is None:
+        return None
+    decision, fn = spec
+    opts = fn(state, character, target)
+    if not opts:
+        return None
+    if decide is None or len(opts) == 1:
+        return dict(opts[0])
+    return dict(decide(actor, decision, opts))
+
+
 def apply_ability(state: GameState, character: str, ability: str, target: str,
-                  decide=None, actor: str | None = None) -> None:
-    """能力効果を適用。decide/actor は効果内で追加選択が要る能力（A.I.）にのみ使う。"""
+                  decide=None, actor: str | None = None,
+                  declared: dict | None = None) -> None:
+    """能力効果を適用。
+
+    - `decide`/`actor` ＝**効果の解決中**に追加選択が要る能力（A.I. の事件効果・妹の肩代わり）。
+    - `declared` ＝**[主] の宣言**で先に決まっている内容（医者の除去/付与）＝`declare_ability`。
+    """
     impl = ABILITY_IMPL.get((character, ability))
     if impl is None:
         return
-    if impl.get("needs_decide"):
+    if impl.get("declare"):
+        impl["apply"](state, character, target, declared=declared)
+    elif impl.get("needs_decide"):
         impl["apply"](state, character, target, decide=decide, actor=actor)
     else:
         impl["apply"](state, character, target)

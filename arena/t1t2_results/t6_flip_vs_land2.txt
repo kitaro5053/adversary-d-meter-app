@@ -1,0 +1,11 @@
+[t6a d3] 集計一致=True  per-game flip=0  rows bit一致=True
+[t6a d5] 集計一致=True  per-game flip=0  rows bit一致=True
+[t6b d3] 集計一致=True  per-game flip=0  rows bit一致=True
+[t6b d5] 集計一致=False  per-game flip=1  rows bit一致=False
+    ('random_FS', 15) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'}
+[t6ab d3] 集計一致=True  per-game flip=0  rows bit一致=True
+[t6ab d5] 集計一致=False  per-game flip=1  rows bit一致=False
+    ('random_FS', 15) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'}
+[t6b9 d3] 集計一致=True  per-game flip=0  rows bit一致=True
+[t6b9 d5] 集計一致=False  per-game flip=1  rows bit一致=False
+    ('random_FS', 15) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'}

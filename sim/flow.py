@@ -35,7 +35,7 @@ from .effects import (
     resolve_turn_end,
     to_engine_board,
 )
-from .state import PROTAGONIST_SEATS, GameState, Script, validate_script
+from .state import ONE_TIME_INITIAL_AREA, PROTAGONIST_SEATS, GameState, Script, validate_script
 from .views import mastermind_view, protagonist_view
 
 
@@ -98,7 +98,8 @@ def attach_mm_bluff(decide, agents: dict):
 # ---------------------------------------------------------------------------
 
 def _resolve_refusal(state: GameState, user: str, ability: str, decide,
-                     target: str | None = None) -> bool:
+                     target: str | None = None,
+                     declared: dict | None = None) -> bool:
     """脚本家が友好能力を拒否するか。True=解決される／False=拒否された（KB: 20/00/60）。
 
     拒否できるのは使用キャラの役職が友好無視/絶対友好無視を持つ場合のみ。絶対＝必ず拒否。
@@ -113,7 +114,10 @@ def _resolve_refusal(state: GameState, user: str, ability: str, decide,
         state.pub({"event": "goodwill_refused", "character": user, "ability": ability})
         return False
     if role_has_friendship_ignore(role):
-        ctx = {"character": user, "ability": ability, "target": target}
+        # ★B-278：[主] の宣言（医者の除去/付与）は拒否より前に済んでいる＝脚本家は
+        #   「何を宣言されたか」を見て拒否を判断する（KB 20:14-18）。
+        ctx = {"character": user, "ability": ability, "target": target,
+               **(declared or {})}
         d = decide("mastermind", "goodwill_refuse",
                    [{"refuse": True, **ctx}, {"refuse": False, **ctx}])
         if d["refuse"]:
@@ -143,11 +147,18 @@ def _run_goodwill_phase(state: GameState, decide) -> None:
         for ab in goodwill_abilities_of(user) or []:
             if ab["name"] == ability and ab["once_per_loop"]:
                 state.used_goodwill.add((user, ability))
+        # ★B-278：KB 20:14-18＝リーダーが [主] を**すべて**行ってから脚本家が拒否を判断する。
+        #   医者『不安操作（除去/付与）』の [主] は 20:228＝「対象1人を選び、**取り除くか置くかも
+        #   宣言する**」＝除去/付与の宣言はここ（拒否より前）。宣言内容は公開情報として
+        #   `goodwill_used` に載せる（旧実装は拒否後の効果解決内で選ばせていた＝拒否されると
+        #   宣言の機会が無く、記録にも残らなかった）。
+        declared = abilities.declare_ability(state, user, ability, chosen["target"],
+                                             decide=decide, actor=state.leader)
         state.pub({"event": "goodwill_used", "character": user, "ability": ability,
-                   "target": chosen["target"]})
-        if _resolve_refusal(state, user, ability, decide, chosen["target"]):
+                   "target": chosen["target"], **(declared or {})})
+        if _resolve_refusal(state, user, ability, decide, chosen["target"], declared):
             abilities.apply_ability(state, user, ability, chosen["target"],
-                                    decide=decide, actor=state.leader)
+                                    decide=decide, actor=state.leader, declared=declared)
             state.pub({"event": "goodwill_resolved", "character": user, "ability": ability})
 
 
@@ -343,12 +354,25 @@ def run_day(state: GameState, decide, human_seats=frozenset()) -> None:
 # ---------------------------------------------------------------------------
 
 def _dynamic_areas_for_loop(state: GameState, decide) -> dict[str, str]:
-    """初期エリアが脚本家指定のキャラ（手先等）をループごとに決めさせる（30:52）。"""
+    """初期エリアが脚本家指定のキャラ（手先・従者）を決めさせる（KB: 30:23）。
+
+    ★KB: 30:23 は2体を**別扱い**にしている：
+      - **手先**＝「脚本家が**各ループで**初期エリアを指定する」（カードは4枠点灯）＝毎ループ選ぶ。
+      - **従者**＝「配置時に脚本家が都市か学校のどちらかを選ぶ（カードは2枠点灯。
+        **ループごとには変えない一度きりの選択**）」＝**初回の1回だけ**選び、以後は再利用する。
+    ★B-29x（2026-09-02・トリアージ A-3）：以前は両者を同じ扱いにして**毎ループ選び直して**いた。
+      一度きりの選択は `state.fixed_initial_areas` に記録される（prepare_loop が実際に使った値）。
+    """
     areas: dict[str, str] = {}
     for name in state.script.cast:
         if initial_area_of(name) is None:
+            if name in ONE_TIME_INITIAL_AREA:
+                fixed = state.fixed_initial_areas.get(name)
+                if fixed is not None:
+                    areas[name] = fixed   # 2ループ目以降＝選び直さない（決定も発生しない）
+                    continue
             # 従者は都市/学校の2択（カードの2枠点灯・KB: 30）／手先は全4エリア。
-            opts = ["都市", "学校"] if name == "従者" else list(AREAS)
+            opts = ["都市", "学校"] if name in ONE_TIME_INITIAL_AREA else list(AREAS)
             chosen = decide("mastermind", "loop_start_area",
                             [{"name": name, "area": a} for a in opts])
             areas[name] = chosen["area"]

@@ -1,0 +1,17 @@
+[t1 d3] 集計一致=False  per-game flip=1  rows bit一致=False
+    ('shrine', 7) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'}
+[t1 d5] 集計一致=True  per-game flip=2  rows bit一致=False
+    ('btx5_future', 4) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'}
+    ('btx5_future', 7) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'}
+[t1lite d3] 集計一致=True  per-game flip=0  rows bit一致=True
+[t1lite d5] 集計一致=True  per-game flip=0  rows bit一致=True
+[t2 d3] 集計一致=True  per-game flip=0  rows bit一致=True
+[t2 d5] 集計一致=False  per-game flip=1  rows bit一致=False
+    ('random_FS', 15) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 9, 'outcome': 'loss', 'race': 'protagonist'}
+[t5 d3] 集計一致=True  per-game flip=0  rows bit一致=True
+[t5 d5] 集計一致=False  per-game flip=1  rows bit一致=False
+    ('random_BTX', 11) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 4, 'outcome': 'defense', 'race': 'protagonist'}
+[combo d3] 集計一致=True  per-game flip=0  rows bit一致=True
+[combo d5] 集計一致=False  per-game flip=2  rows bit一致=False
+    ('random_FS', 15) OFF: {'loops_to_win': 2, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'}
+    ('random_BTX', 11) OFF: {'loops_to_win': 3, 'outcome': 'defense', 'race': 'protagonist'} → {'loops_to_win': 4, 'outcome': 'defense', 'race': 'protagonist'}

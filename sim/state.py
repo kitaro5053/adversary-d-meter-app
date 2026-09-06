@@ -152,6 +152,21 @@ def _rule_tables(set_name: str):
     raise ValueError(f"対応セットはFS/BTXのみ（{set_name} は範囲外＝原本確認）")
 
 
+def rule_x_names(set_name: str) -> tuple[str, ...]:
+    """`set_name` の惨劇セットに含まれるルールXの全名称（定義順）。
+
+    情報屋の宣言候補の単一ソース（KB: 20:175「その名前はゲームで用いている惨劇セットに
+    含まれるルールXのものでなくてはならない」）。dict は定義順を保つ＝**決定的**。
+    """
+    return tuple(_rule_tables(set_name)[1])
+
+
+# 初期エリアの選択が「配置時の一度きり」であるキャラ（KB: 30:23）。
+# ★従者＝「配置時に脚本家が都市か学校のどちらかを選ぶ（**ループごとには変えない一度きりの選択**）」。
+#   手先＝「脚本家が**各ループで**初期エリアを指定する」＝ここには入れない（毎ループ選び直す）。
+ONE_TIME_INITIAL_AREA: frozenset[str] = frozenset({"従者"})
+
+
 def _required_role_counts(slots: Counter) -> dict[str, int]:
     """役職スロットから必要配役数を算出（人数上限で頭打ち。KB: 50:21）。"""
     return {r: min(n, ROLE_MAX.get(r, n)) for r, n in slots.items()}
@@ -448,6 +463,9 @@ class GameState:
     rule_y_board_x: str | None = None  # 復讐者の灯火のボードX（クロマク初期エリア・ループ毎確定）
     juusha_targets: set = field(default_factory=set)  # 従者の友好能力で追加された追随対象（このループ）
     alubaito_spawn_pending: bool = False  # アルバイト死亡→次ターン開始に都市へアルバイト？を配置（KB: 30）
+    # ゲーム中1回だけ決める初期エリア（従者＝KB: 30:23「ループごとには変えない一度きりの選択」）。
+    # prepare_loop が実際に使った値を初回だけ記録し、以後のループはこれを再利用する（B-29x / A-3）。
+    fixed_initial_areas: dict[str, str] = field(default_factory=dict)
 
     # -- ループ準備（KB: 00 ループの準備） --------------------------------
 
@@ -463,10 +481,15 @@ class GameState:
             area = initial_area_of(name)
             if area is None:
                 area = dynamic_areas.get(name)
+                if area is None and name in ONE_TIME_INITIAL_AREA:
+                    # 一度きりの選択（従者）＝2ループ目以降は初回の値をそのまま使う（KB: 30:23）。
+                    area = self.fixed_initial_areas.get(name)
                 if area is None:
                     raise ValueError(f"{name} の初期エリアは脚本家指定が必要（dynamic_areas）")
             if area not in AREAS:
                 raise ValueError(f"{name} の初期エリア '{area}' が無効")
+            if name in ONE_TIME_INITIAL_AREA:
+                self.fixed_initial_areas.setdefault(name, area)  # 初回の選択を固定（KB: 30:23）
             placed_areas[name] = area
             if self.loop_no < self.script.entry_loops.get(name, 1):
                 area_or_none: str | None = None  # 登場ループ前＝このループ全体で未登場（神格）
@@ -685,6 +708,7 @@ class GameState:
             "rule_y_board_x": self.rule_y_board_x,
             "juusha_targets": sorted(self.juusha_targets),
             "alubaito_spawn_pending": self.alubaito_spawn_pending,
+            "fixed_initial_areas": dict(self.fixed_initial_areas),
         }
 
     @classmethod
@@ -737,6 +761,8 @@ class GameState:
         st.rule_y_board_x = d["rule_y_board_x"]
         st.juusha_targets = set(d.get("juusha_targets", ()))
         st.alubaito_spawn_pending = d.get("alubaito_spawn_pending", False)
+        # 旧版snapshot（本キー以前）＝{}＝次ループで改めて選ばせる（後方互換・値は捏造しない）。
+        st.fixed_initial_areas = dict(d.get("fixed_initial_areas", {}))
         return st
 
 

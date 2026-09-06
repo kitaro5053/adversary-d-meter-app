@@ -1,0 +1,49 @@
+# B-287 4日級 腕の分解（on=ループ記憶のみ / a=日数条件づけ / b=切り札温存 / on4=ab併用）
+perm  形         第1層   Σmm    Δ  def  D1  D2  非decoy
+id    cur5       73    98   +0   37   8  26       0
+id    on         81   102   +4   37  11  27       0
+id    a          78   101   +3   37   9  27       0
+id    b          88    96   -2   36   7  28       0
+id    on4        78   101   +3   37   9  28       0
+----------------------------------------------
+rev   cur5       83    89   +0   36   5  23       0
+rev   on         71    85   -4   37   6  22       0
+rev   a          79    88   -1   36   6  22       0
+rev   b         102    85   -4   37   4  24       0
+rev   on4        79    88   -1   36   6  23       0
+----------------------------------------------
+h1    cur5      108   100   +0   35   4  23       2
+h1    on         78    99   -1   35   5  22       2
+h1    a          76    96   -4   36   4  22       2
+h1    b         107    96   -4   37   3  25       2
+h1    on4        76    96   -4   36   4  23       2
+----------------------------------------------
+rot1  cur5       73    98   +0   37   8  26       0
+rot1  on         81   102   +4   37  11  27       0
+rot1  a          78   101   +3   37   9  27       0
+rot1  b          88    96   -2   36   7  28       0
+rot1  on4        78   101   +3   37   9  28       0
+----------------------------------------------
+Σ第2層 4条件合計: cur5=385(Δ+0)  on=388(Δ+3)  a=386(Δ+1)  b=373(Δ-12)  on4=386(Δ+1)
+
+## per-game Δ（cur5 → 各形）
+-- on --
+  id: random_BTX#1:2(defe)→6(defe)[+4]  random_BTX#6:2(defe)→3(defe)[+1]  random_BTX#8:5(defe)→4(defe)[-1]
+  rev: random_FS#12:3(defe)→2(defe)[-1]  random_BTX#1:9(fb_l)→6(defe)[-3]
+  h1: random_FS#12:3(defe)→2(defe)[-1]  random_BTX#1:9(fb_w)→9(fb_l)[+0]  random_BTX#6:2(defe)→3(defe)[+1]  random_BTX#8:5(defe)→4(defe)[-1]
+  rot1: random_BTX#1:2(defe)→6(defe)[+4]  random_BTX#6:2(defe)→3(defe)[+1]  random_BTX#8:5(defe)→4(defe)[-1]
+-- a --
+  id: random_BTX#1:2(defe)→5(defe)[+3]  random_BTX#6:2(defe)→3(defe)[+1]  random_BTX#8:5(defe)→4(defe)[-1]
+  rev: random_FS#12:3(defe)→2(defe)[-1]  random_BTX#1:9(fb_l)→9(fb_w)[+0]
+  h1: random_FS#12:3(defe)→2(defe)[-1]  random_BTX#1:9(fb_w)→6(defe)[-3]  random_BTX#6:2(defe)→3(defe)[+1]  random_BTX#8:5(defe)→4(defe)[-1]
+  rot1: random_BTX#1:2(defe)→5(defe)[+3]  random_BTX#6:2(defe)→3(defe)[+1]  random_BTX#8:5(defe)→4(defe)[-1]
+-- b --
+  id: random_FS#8:3(defe)→9(loss)[+6]  random_FS#16:7(defe)→3(defe)[-4]  random_BTX#5:3(defe)→2(defe)[-1]  random_BTX#6:2(defe)→3(defe)[+1]  random_BTX#8:5(defe)→6(defe)[+1]  random_BTX#18:8(defe)→3(defe)[-5]
+  rev: random_BTX#1:9(fb_l)→9(fb_w)[+0]  random_BTX#5:3(defe)→2(defe)[-1]  random_BTX#18:9(fb_l)→6(defe)[-3]
+  h1: random_BTX#3:9(fb_l)→4(defe)[-5]  random_BTX#5:3(defe)→2(defe)[-1]  random_BTX#6:2(defe)→3(defe)[+1]  random_BTX#8:5(defe)→8(defe)[+3]  random_BTX#18:9(fb_l)→7(defe)[-2]
+  rot1: random_FS#8:3(defe)→9(loss)[+6]  random_FS#16:7(defe)→3(defe)[-4]  random_BTX#5:3(defe)→2(defe)[-1]  random_BTX#6:2(defe)→3(defe)[+1]  random_BTX#8:5(defe)→6(defe)[+1]  random_BTX#18:8(defe)→3(defe)[-5]
+-- on4 --
+  id: random_BTX#1:2(defe)→5(defe)[+3]  random_BTX#6:2(defe)→3(defe)[+1]  random_BTX#8:5(defe)→4(defe)[-1]
+  rev: random_FS#12:3(defe)→2(defe)[-1]  random_BTX#1:9(fb_l)→9(fb_w)[+0]
+  h1: random_FS#12:3(defe)→2(defe)[-1]  random_BTX#1:9(fb_w)→6(defe)[-3]  random_BTX#6:2(defe)→3(defe)[+1]  random_BTX#8:5(defe)→4(defe)[-1]
+  rot1: random_BTX#1:2(defe)→5(defe)[+3]  random_BTX#6:2(defe)→3(defe)[+1]  random_BTX#8:5(defe)→4(defe)[-1]

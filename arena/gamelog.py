@@ -23,6 +23,9 @@ from sim.state import (  # noqa: F401  再エクスポート
 LOG_FORMAT_VERSION = 1
 
 
+import os as _os  # noqa: E402  ★B-272＝収録時の PYTHONHASHSEED を読む
+
+
 def _probe_tool_build() -> str:
     """git からコミット短縮ハッシュを読む（取れなければ空）。★import 時に1回だけ呼ぶ。"""
     import subprocess
@@ -38,6 +41,22 @@ def _probe_tool_build() -> str:
 #   保存のたびに git を読むと、アプリ起動後に git が進んだとき「ロードされていない
 #   コードのSHA」が棋譜に記録される（B-191 Phase 0 で実害確定＝切り分けを誤らせた）。
 _TOOL_BUILD = _probe_tool_build()
+
+
+# ★B-272（2026-08-20・ユーザー裁定「272やっていいよ」）＝**収録時の `PYTHONHASHSEED` を残す**。
+#   出典＝§72-82（B-266）＝`P(パーソン)` の2位/3位が **1 ULP** しか違わない席があり、その符号が
+#   **hash 順（＝set/dict の反復順に依存する浮動小数の集計順）** で反転する。
+#   ∴ ★**教材棋譜は `tool_build` だけでは再生できない＝収録時の hash seed も要る**。
+#   ★**正直な限界**＝`PYTHONHASHSEED` が**未設定のとき、Python は実際の乱数化シードを公開しない**
+#     （`sys.hash_info` にも無い）。∴ 記録できるのは「**設定されていたか／その値**」までで、
+#     未設定なら `None`＝**再生側は seed 掃引が要る**（`arena/b266_audit.py hashseed`）。
+#   ★import 時に1回だけ読む（`_TOOL_BUILD` と同じ理由＝保存のたびに読むと途中で変わりうる）。
+_HASH_SEED = _os.environ.get("PYTHONHASHSEED")
+
+
+def _hash_seed():
+    """収録時の `PYTHONHASHSEED`（未設定なら None＝**再生には seed 掃引が要る**）。"""
+    return _HASH_SEED
 
 
 def _tool_build() -> str:
@@ -205,6 +224,8 @@ def game_to_jsonl(script: Script, state: GameState, decisions: list[dict],
         "log_format_version": LOG_FORMAT_VERSION,
         "app_version": app_version,
         "tool_build": _tool_build(),
+        # ★B-272＝収録時の hash seed（未設定なら None）。§72-82／§72-87。
+        "hash_seed": _hash_seed(),
         "saved_at": saved_at or utc_saved_at(),
         "script": script_to_dict(script),
         "winner": state.winner,

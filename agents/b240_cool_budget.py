@@ -162,6 +162,16 @@ def aim_floor_targets(agent, view: dict) -> frozenset:
     """今日「1枚撃てば確実に事件が止まる」犯人候補の集合（`B240_AIM_FLOOR` の対象）。"""
     if not getattr(agent, "B240_AIM_FLOOR", False):
         return frozenset()
+    return certain_stop_targets(agent, view)
+
+
+def certain_stop_targets(agent, view: dict) -> frozenset:
+    """★述語の単一ソース（切替口に依らない）＝今日「1枚撃てば確実に事件が止まる」候補。
+
+    `aim_floor_targets`（B-240 の第2腕）と B-241 の席の調停（`agents/b241_seat_arb.py`）が
+    **同じ述語**を使うための抽出（2026-08-17・B-241）。上の関数から本体を切り出しただけで
+    中身は一字も変えていない＝`B240_AIM_FLOOR` の挙動は bit 不変。
+    """
     today = view.get("day")
     if today is None:
         return frozenset()

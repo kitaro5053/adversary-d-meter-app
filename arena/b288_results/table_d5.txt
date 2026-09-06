@@ -1,0 +1,38 @@
+================================================================================================================
+条件          形         第1層(N→N+1)    累積    再封   Σmm    Δ    平均ltw   def(参考)  D1  D2  非decoy  C279
+d5_id       cur5             167   231   125   225   +0    3.812        69  25  65       1   195
+d5_id       cur5g            190   205   142   206  -19    3.575        73  23  54       1   190
+----------------------------------------------------------------------------------------------------------------
+d5_rev      cur5             182   231   150   185   +0    3.312        76  23  68       0   154
+d5_rev      cur5g            160   214   122   174  -11    3.175        78  20  69       0   120
+----------------------------------------------------------------------------------------------------------------
+d5_h1       cur5             383   421   293   230   +0    3.875        70  18  75       0   323
+d5_h1       cur5g            407   423   318   223   -7    3.788        72  17  70       0   338
+----------------------------------------------------------------------------------------------------------------
+d5_rot1     cur5             159   206   123   223   +0    3.788        70  24  72       1   186
+d5_rot1     cur5g            187   200   141   209  -14    3.612        73  22  61       1   188
+----------------------------------------------------------------------------------------------------------------
+Σ第2層  cur5=863
+  cur5g: Σ=812  Δ合計=-51  perm別Δ=[-19, -11, -7, -14]  第3層符号一致=全負
+
+== 番人（複線演出の非decoy／mm_lint）==
+  d5_id cur5: 非decoy=1 ボード暗躍1299席/寄与なし86(ダミー85) lint={'D1': 25, 'D2': 65, 'D5': 1} 結末={'defense': 69, 'fb_loss': 8, 'fb_win': 2, 'loss': 1}
+  d5_id cur5g: 非decoy=1 ボード暗躍1237席/寄与なし83(ダミー82) lint={'D1': 23, 'D2': 54, 'D5': 1} 結末={'defense': 73, 'fb_loss': 7}
+  d5_rev cur5: 非decoy=0 ボード暗躍871席/寄与なし68(ダミー68) lint={'D1': 23, 'D2': 68} 結末={'defense': 76, 'fb_loss': 2, 'loss': 2}
+  d5_rev cur5g: 非decoy=0 ボード暗躍840席/寄与なし67(ダミー67) lint={'D1': 20, 'D2': 69} 結末={'defense': 78, 'fb_loss': 1, 'loss': 1}
+  d5_h1 cur5: 非decoy=0 ボード暗躍1037席/寄与なし85(ダミー85) lint={'D1': 18, 'D2': 75} 結末={'defense': 70, 'fb_loss': 9, 'loss': 1}
+  d5_h1 cur5g: 非decoy=0 ボード暗躍1038席/寄与なし81(ダミー81) lint={'D1': 17, 'D2': 70} 結末={'defense': 72, 'fb_loss': 6, 'fb_win': 1, 'loss': 1}
+  d5_rot1 cur5: 非decoy=1 ボード暗躍1259席/寄与なし86(ダミー85) lint={'D1': 24, 'D2': 72, 'D5': 1} 結末={'defense': 70, 'fb_loss': 7, 'fb_win': 2, 'loss': 1}
+  d5_rot1 cur5g: 非decoy=1 ボード暗躍1239席/寄与なし83(ダミー82) lint={'D1': 22, 'D2': 61, 'D5': 1} 結末={'defense': 73, 'fb_loss': 7}
+
+== flip 全数（cur5→各形）==
+d5_id cur5g: btx5_seal_cat#4:9(fb_l)→4(defe)[-5]  random_FS#8:9(loss)→6(defe)[-3]  random_BTX#1:8(defe)→3(defe)[-5]  random_BTX#3:9(fb_w)→9(fb_l)[+0]  random_BTX#4:9(fb_l)→3(defe)[-6]  random_BTX#8:9(fb_w)→7(defe)[-2]  random_BTX#16:4(defe)→6(defe)[+2]
+d5_rev cur5g: btx5_seal_cat#2:4(defe)→5(defe)[+1]  btx5_seal_cat#4:4(defe)→5(defe)[+1]  btx5_seal_cat#6:4(defe)→5(defe)[+1]  random_FS#0:9(loss)→2(defe)[-7]  random_BTX#4:9(fb_l)→4(defe)[-5]  random_BTX#16:6(defe)→4(defe)[-2]
+d5_h1 cur5g: btx5_seal_cat#0:3(defe)→5(defe)[+2]  btx5_seal_cat#4:3(defe)→5(defe)[+2]  btx5_seal_cat#7:3(defe)→5(defe)[+2]  random_BTX#1:9(fb_l)→6(defe)[-3]  random_BTX#3:9(fb_l)→9(fb_w)[+0]  random_BTX#4:9(fb_l)→4(defe)[-5]  random_BTX#8:7(defe)→3(defe)[-4]  random_BTX#15:3(defe)→4(defe)[+1]  random_BTX#16:6(defe)→4(defe)[-2]
+d5_rot1 cur5g: random_FS#8:9(loss)→6(defe)[-3]  random_BTX#1:8(defe)→3(defe)[-5]  random_BTX#3:9(fb_w)→9(fb_l)[+0]  random_BTX#4:9(fb_l)→3(defe)[-6]  random_BTX#8:9(fb_w)→7(defe)[-2]  random_BTX#16:4(defe)→6(defe)[+2]
+
+== 形どうしの per-game 一致（bit 同値の検問）==
+  d5_id cur5 vs cur5g: 帰結の違う局 = 7
+  d5_rev cur5 vs cur5g: 帰結の違う局 = 6
+  d5_h1 cur5 vs cur5g: 帰結の違う局 = 9
+  d5_rot1 cur5 vs cur5g: 帰結の違う局 = 6

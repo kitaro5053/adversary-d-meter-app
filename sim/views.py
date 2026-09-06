@@ -7,7 +7,7 @@ AIエージェントと決定ログにはこのモジュールの view だけを
 公開情報の根拠（KB: 00）:
 - 公開シート＝セット名・ループ回数・日数・登場キャラ・事件リスト（日＋事件名）。
   配役・犯人・ルールY/Xは非公開シート（00:76）。
-- カウンター（不安・友好・暗躍）と生死・位置は盤上の事実＝両陣営に見える。
+- カウンター（不安・友好・暗躍・護衛）と生死・位置は盤上の事実＝両陣営に見える。
 - 1/loopの使用済みカードは表向きで手前に置く＝全員分公開（00:108）。
 - 能力等で公開された役職（revealed_roles）は以後主人公にも見える。
 - 裏向きセット中のカードは「誰がどこに置いたか」は公開、中身は持ち主のみ
@@ -24,7 +24,7 @@ def _public_char(state: GameState, name: str) -> dict:
     if c is None:
         # ループ準備前（loop_start_area 決定時点等）＝盤面未構築
         return {"name": name, "area": None, "alive": True,
-                "unrest": 0, "goodwill": 0, "anyaku": 0}
+                "unrest": 0, "goodwill": 0, "anyaku": 0, "guard": 0}
     d = {
         "name": c.name,
         "area": c.area,       # None＝未登場
@@ -32,6 +32,11 @@ def _public_char(state: GameState, name: str) -> dict:
         "unrest": c.unrest,
         "goodwill": c.goodwill,
         "anyaku": c.anyaku,
+        # ★T8（2026-09-06）：護衛カウンター（刑事の友好能力2・KB 20）は卓上に置かれる
+        #   公開情報＝両陣営のビューに載せる。A.I. の発生判定（特性②＝全カウンター合算・
+        #   KB 30:50）を脚本家AIが `engine.incident.effective_unrest_for_incident` と同じ
+        #   算術で数えるのに必要。
+        "guard": c.guard,
     }
     if name in state.revealed_roles:
         d["revealed_role"] = state.revealed_roles[name]

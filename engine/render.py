@@ -174,6 +174,17 @@ def render_goodwill_verdict(outcome: Outcome) -> str:
     else:
         lines.append("- **使用条件：満たさない（使えない）**。")
 
+    # ★B-278：手順の順序（KB `rules/20_goodwill_abilities.md:14-18` 共通手順）。
+    #   実戦報告＝医者『不安操作（除去/付与）』で「除去/付与を選ぶ前に拒否された」＝
+    #   拒否が先だと誤解されやすい。拒否が起こりうる時だけ1行で順序を明示する
+    #   （拒否不可なら順序を気にする必要がないため出さない＝冗長化を避ける）。
+    if ga.refuse in (REFUSE_FORCED, REFUSE_OPTIONAL):
+        lines.append(
+            "- 順序：**[主]（対象の選択・宣言）を先にすべて行い、その後で脚本家が拒否を判断する**"
+            "（KB: 20 共通手順）。例＝〈医者〉『不安操作（除去/付与）』は"
+            "**「取り除く／置く」まで宣言してから**拒否される。"
+        )
+
     # 拒否可否（脚本家視点）。使用条件を満たす／満たさないに関わらず整理して示す。
     if ga.refuse == REFUSE_FORCED:
         lines.append(

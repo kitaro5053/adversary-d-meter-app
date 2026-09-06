@@ -1,0 +1,2 @@
+# 5日級 perm=id mode=cur: {'D1': 25, 'D2': 65, 'D5': 1} 決定6072
+→ arena/b289_results/lint_d5_id_cur.json
